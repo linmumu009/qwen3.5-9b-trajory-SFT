@@ -20,11 +20,16 @@
 - 已确认本机芯片为 Atlas 900 A3（`ascend910_9391`）；官方 A2 镜像不兼容本机动态算子内核，不用于后续训练。
 - Qwen3.5 NPU 快速线性注意力链路已补齐；Qwen3.5-9B 真实权重前向、LoRA 反向传播及一次 AdamW 优化器更新均在 NPU 上验证通过。
 - 已删除旧的同名容器并用 v0.2.0 镜像重建，容器名与 `/data3/llin/trajory_sft:/workspace/sft` 挂载保持不变。
+- 已将 24 个未筛选 OpenAI 轨迹 JSONL 复制到项目数据目录，共 36,000 条、约 3.4 GB；原始副本、verdict、manifest 和处理产物分目录保存。
+- 已实现 OpenAI `reasoning_content/tool_calls/tool` 到 ms-swift `assistant/tool_call/tool_response` 的轨迹转换、身份对齐、结构审计和候选目录统计。
+- 8 条 `correct` 完整工具轨迹已通过 Qwen3.5 loss mask 验收和真实 ms-swift LoRA 训练步；工具调用参与 loss，tool response 不参与 loss。
+- 36,000 条中有 15,072 条被规则 judge 标为 `correct`；再经工具闭环、最终回答和参数规范门槛后得到 14,392 条候选，正式训练前仍需 tokenizer 长度分桶、按 task_id 去重/切分和弱规则样本复判。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
+| v0.3.0 | 2026-07-14 | 完成轨迹数据副本、格式适配、训练 smoke 与筛选目录 | 已完成 | [查看报告](updates/v0.3.0_20260714_181936_轨迹数据适配与SFT训练smoke.md) |
 | v0.2.0 | 2026-07-14 | 构建 Qwen3.5 A3 轨迹 SFT 派生镜像并完成训练级验证 | 已完成 | [查看报告](updates/v0.2.0_20260714_171447_Qwen3.5轨迹SFT训练镜像构建.md) |
 | v0.1.4 | 2026-07-14 | 切换至官方 A3 ms-swift v4.3.0 镜像并完成 NPU 验证 | 已完成 | [查看报告](updates/v0.1.4_20260714_162727_官方A3镜像切换与NPU验证.md) |
 | v0.1.3 | 2026-07-14 | 将训练容器工作区重新挂载到统一项目目录 | 已完成 | [查看报告](updates/v0.1.3_20260714_144951_容器工作目录重新挂载.md) |
