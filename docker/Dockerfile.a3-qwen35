@@ -1,0 +1,74 @@
+FROM quay.io/ascend/ms-swift:v4.3.0-A3-py311-CANN9.0.0-ubuntu22.04
+
+ARG MINDSPEED_REPO=https://gitcode.com/Ascend/MindSpeed.git
+ARG MINDSPEED_REF=core_r0.16.0
+ARG MINDSPEED_COMMIT=e4772499f7eb9fa9a68919dd1eaddef00e915b2d
+ARG MEGATRON_REPO=https://gitcode.com/GitHub_Trending/me/Megatron-LM.git
+ARG MEGATRON_REF=core_v0.16.0
+ARG MEGATRON_COMMIT=3bec9aa97dda898d16ff5a89bac0ed2b6682b172
+ARG SWIFT_REPO=https://gitcode.com/GitHub_Trending/swift1/swift.git
+ARG SWIFT_REF=v4.3.2
+ARG SWIFT_COMMIT=d639d2f8dcc5ab48dfa9e330cc6264dfbed39f60
+
+# Disable the base image's pypi.org fallback. Package installation must use a
+# mainland-China mirror because the training server cannot reliably reach
+# overseas package indexes.
+ENV PIP_CONFIG_FILE=/dev/null \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    MEGATRON_LM_PATH=/opt/Megatron-LM-0.16.0 \
+    PYTHONPATH=/opt/Megatron-LM-0.16.0:/usr/local/Ascend/ascend-toolkit/latest/python/site-packages:/usr/local/Ascend/ascend-toolkit/latest/opp/built-in/op_impl/ai_core/tbe:/usr/local/Ascend/cann-9.0.0/python/site-packages:/usr/local/Ascend/cann-9.0.0/opp/built-in/op_impl/ai_core/tbe:
+
+RUN git clone --depth 1 --branch "${MEGATRON_REF}" "${MEGATRON_REPO}" /opt/Megatron-LM-0.16.0 \
+    && test "$(git -C /opt/Megatron-LM-0.16.0 rev-parse HEAD)" = "${MEGATRON_COMMIT}"
+
+RUN git clone --depth 1 --branch "${MINDSPEED_REF}" "${MINDSPEED_REPO}" /opt/MindSpeed-0.16.0 \
+    && test "$(git -C /opt/MindSpeed-0.16.0 rev-parse HEAD)" = "${MINDSPEED_COMMIT}"
+
+RUN git clone --depth 1 --branch "${SWIFT_REF}" "${SWIFT_REPO}" /opt/ms-swift-4.3.2 \
+    && test "$(git -C /opt/ms-swift-4.3.2 rev-parse HEAD)" = "${SWIFT_COMMIT}"
+
+RUN python -m pip install --no-cache-dir \
+        transformers==5.2.0 \
+        flash-linear-attention==0.4.2 \
+    && python -m pip install --no-cache-dir --no-deps -e /opt/Megatron-LM-0.16.0 \
+    && python -m pip install --no-cache-dir --no-deps -e /opt/MindSpeed-0.16.0 \
+    && python -m pip install --no-cache-dir --no-deps -e /opt/ms-swift-4.3.2
+
+RUN python - <<'PY'
+import importlib.metadata as metadata
+from pathlib import Path
+
+expected = {
+    'ms_swift': '4.3.2',
+    'numpy': '1.26.4',
+    'torch': '2.9.0',
+    'torch_npu': '2.9.0.post2',
+    'transformers': '5.2.0',
+    'flash-linear-attention': '0.4.2',
+    'fla-core': '0.4.2',
+    'mindspeed': '0.16.0',
+    'megatron-core': '0.16.0',
+    'triton_ascend': '3.2.1',
+}
+for package, version in expected.items():
+    actual = metadata.version(package)
+    if actual != version:
+        raise RuntimeError(f'{package}: expected {version}, got {actual}')
+
+required_files = (
+    Path('/opt/MindSpeed-0.16.0/mindspeed/ops/triton/chunk_delta_h.py'),
+    Path('/opt/MindSpeed-0.16.0/mindspeed/ops/triton/chunk_o.py'),
+    Path('/opt/MindSpeed-0.16.0/mindspeed/ops/triton/chunk_scaled_dot_kkt.py'),
+    Path('/opt/MindSpeed-0.16.0/mindspeed/ops/triton/wy_fast.py'),
+    Path('/opt/ms-swift-4.3.2/swift/model/chunk_gated_delta_rule.py'),
+)
+for path in required_files:
+    if not path.is_file():
+        raise RuntimeError(f'Missing required source file: {path}')
+    print(f'FILE_OK {path}')
+PY
+
+LABEL org.opencontainers.image.title="qwen3.5-9b-msswift-trajory-sft" \
+      org.opencontainers.image.description="Qwen3.5 NPU trajectory SFT environment for Atlas 900 A3" \
+      org.opencontainers.image.version="0.2.0"
