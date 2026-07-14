@@ -1,0 +1,39 @@
+# Local reference repositories
+reference/
+
+# Server access notes and credentials
+SSH_PRIVATE_KEY_LOGIN_Manchine05.md
+.env
+.env.*
+*.pem
+*.key
+
+# Datasets and generated artifacts
+datasets/
+archives/
+checkpoints/
+outputs/
+runs/
+wandb/
+
+# Model weights
+*.safetensors
+*.ckpt
+*.pt
+*.pth
+*.bin
+
+# Python caches and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
