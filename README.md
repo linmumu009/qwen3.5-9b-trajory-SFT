@@ -37,11 +37,16 @@
 - Qwen3.5 经验换算中位数约为 1 token:1.91 字符、全量加权约 1:2.03；本轮 14,333 条中 14,332 条直接复用既有真实 token，仅 1 条使用校准估算且未跨长度分层边界。
 - 已将 27 条强验证 train 与 2,001 条待复判 train 原样合并为单一 `train_candidates_16k_2028.jsonl`；held-out 和长轨迹未混入，该文件是候选合集而非复判完成的 `train_ready` 数据。
 - 已将 27 条 SQL 结果强验证轨迹另存为 `train_smoke_strong_verified_16k_27.jsonl`，用于优先验证 ms-swift 训练链路；该文件不等同于零瑕疵正式训练集。
+- Transformers/FSDP2 全参链路已完成故障定位：无 CPU offload 时可运行 8 个优化器步但在长样本反向阶段 OOM；仅激活卸载在第 2 步 OOM；参数与激活全卸载会因 HCCL 不支持 CPU DTensor collective 而在梯度裁剪阶段退出，因此不再作为本轮生产方案。
+- 已切换至镜像内置的 Megatron-Core 0.16.0 + MindSpeed 0.16.0，采用 `TP4 / PP2 / DP2`、sequence parallel、distributed optimizer 和 full recompute；Qwen3.5-9B 的 32 层、16 个注意力头、4 个 KV 头均与该拓扑整除匹配。
+- 已从 2,028 条候选中按真实 Qwen3.5 token 选择最长 32 条（15,913–16,374 tokens）完成两步全参压力测试：两步均成功，框架显存最高 27.85 GiB，`npu-smi` 逐卡物理峰值最高 34.32 GiB，退出码为 0。
+- 已启动 16 卡 Qwen3.5-9B 全参轨迹 SFT 正式任务：16K、global batch 16、150 步、每 15 步保存完整 MCore 模型/优化器/RNG、最多保留 10 份；首个 172 GiB `checkpoint-15` 已成功写入且训练在保存后继续，运行目录为 `/data3/llin/trajory_sft/runs/qwen35_9b_megatron_tp4_pp2_dp2_16k_2028_150steps_20260715_173250`。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
+| v0.6.0 | 2026-07-15 | 切换 Megatron/MindSpeed TP4/PP2/DP2，完成 16K 最长样本压力测试并启动 150 步全参轨迹 SFT | 运行中 | [查看报告](updates/v0.6.0_20260715_173250_Megatron并行全参轨迹SFT.md) |
 | v0.5.2 | 2026-07-15 | 独立保存 27 条 16K 强验证轨迹作为训练 smoke 数据 | 已完成 | [查看报告](updates/v0.5.2_20260715_153810_27条强验证训练Smoke文件.md) |
 | v0.5.1 | 2026-07-15 | 将 2,028 条 16K 内 train 候选合并为单一 ms-swift JSONL | 已完成 | [查看报告](updates/v0.5.1_20260715_153138_16K训练候选单文件合并.md) |
 | v0.5.0 | 2026-07-15 | 完成上游 correct 的确定性筛选与四类物化，验证 24K 后恢复 16K 生产上限 | 已完成 | [查看报告](updates/v0.5.0_20260715_144458_上游correct确定性筛选与分层物化.md) |
