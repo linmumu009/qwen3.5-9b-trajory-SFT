@@ -73,6 +73,46 @@ def canonical_tools(messages: list[dict]) -> tuple[bool, str | None]:
             return False, "missing_required_argument"
         if not keys.issubset(allowed):
             return False, "noncanonical_argument_key"
+        if name == "bash":
+            if not isinstance(arguments.get("command"), str):
+                return False, "invalid_argument_value"
+            timeout = arguments.get("timeout")
+            if timeout is not None and (
+                not isinstance(timeout, int) or isinstance(timeout, bool) or timeout < 1
+            ):
+                return False, "invalid_argument_value"
+        elif name == "read":
+            if not isinstance(arguments.get("path"), str):
+                return False, "invalid_argument_value"
+            for key in ("offset", "limit"):
+                value = arguments.get(key)
+                if value is not None and (
+                    not isinstance(value, int)
+                    or isinstance(value, bool)
+                    or value < (0 if key == "offset" else 1)
+                ):
+                    return False, "invalid_argument_value"
+        elif name == "write":
+            if not isinstance(arguments.get("path"), str) or not isinstance(
+                arguments.get("content"), str
+            ):
+                return False, "invalid_argument_value"
+        elif name == "edit":
+            if not isinstance(arguments.get("path"), str):
+                return False, "invalid_argument_value"
+            direct_edit = isinstance(arguments.get("oldText"), str) and isinstance(
+                arguments.get("newText"), str
+            )
+            edits = arguments.get("edits")
+            batch_edit = isinstance(edits, list) and bool(edits) and all(
+                isinstance(edit, dict)
+                and isinstance(edit.get("oldText"), str)
+                and isinstance(edit.get("newText"), str)
+                and set(edit).issubset({"oldText", "newText"})
+                for edit in edits
+            )
+            if not direct_edit and not batch_edit:
+                return False, "invalid_argument_value"
     return True, None
 
 

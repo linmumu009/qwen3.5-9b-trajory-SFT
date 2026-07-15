@@ -6,7 +6,7 @@
 
 ## 当前进展
 
-截至 2026-07-14：
+截至 2026-07-15：
 
 - `datasets/` 已按 `open_source/` 与 `sandboxes/` 两仓分立方案重组。
 - 149 个扁平化沙箱已拉回本地，共约 3.3 GB。
@@ -23,12 +23,17 @@
 - 已将 24 个未筛选 OpenAI 轨迹 JSONL 复制到项目数据目录，共 36,000 条、约 3.4 GB；原始副本、verdict、manifest 和处理产物分目录保存。
 - 已实现 OpenAI `reasoning_content/tool_calls/tool` 到 ms-swift `assistant/tool_call/tool_response` 的轨迹转换、身份对齐、结构审计和候选目录统计。
 - 8 条 `correct` 完整工具轨迹已通过 Qwen3.5 loss mask 验收和真实 ms-swift LoRA 训练步；工具调用参与 loss，tool response 不参与 loss。
-- 36,000 条中有 15,072 条被规则 judge 标为 `correct`；再经工具闭环、最终回答和参数规范门槛后得到 14,392 条候选，正式训练前仍需 tokenizer 长度分桶、按 task_id 去重/切分和弱规则样本复判。
+- 36,000 条中有 15,072 条被规则 judge 标为 `correct`；经工具闭环、最终回答、工具参数键和值类型严格校验后得到 14,333 条候选。
+- 已为转换数据补齐 bash/read/write/edit 顶层工具 schema，并确认 Qwen3.5 模板会把工具契约注入 system；tool call 参与 loss，tool response 保留上下文但不参与 loss。
+- 已完成 14,333 条候选的真实 Qwen3.5 token 与监督密度审计：中位长度 25,415，5,521 条超过 32K 且占 69.6% 输入 token，加权监督占比仅 18.59%。
+- 已生成 4,259 条元数据级复判规划池，按 `(version, task_id)` 去重、每题每阶段最多 3 条，并按 task_id 固定切分 train/validation/test；其中 4,179 条弱证据样本仍需复判。
+- Qwen3.5-9B LoRA rank 16 单卡实测峰值：4K 23.45 GiB、8K 25.80 GiB、16K 34.73 GiB、32K 59.95 GiB；当前生产长度上限设为 16K，32K 等待多卡长序列路径闭环。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
+| v0.4.0 | 2026-07-15 | 完成轨迹 token/质量审计、数据分层规划与 4K–32K NPU 显存实测 | 已完成 | [查看报告](updates/v0.4.0_20260715_112134_轨迹数据审计与长度分层方案.md) |
 | v0.3.0 | 2026-07-14 | 完成轨迹数据副本、格式适配、训练 smoke 与筛选目录 | 已完成 | [查看报告](updates/v0.3.0_20260714_181936_轨迹数据适配与SFT训练smoke.md) |
 | v0.2.0 | 2026-07-14 | 构建 Qwen3.5 A3 轨迹 SFT 派生镜像并完成训练级验证 | 已完成 | [查看报告](updates/v0.2.0_20260714_171447_Qwen3.5轨迹SFT训练镜像构建.md) |
 | v0.1.4 | 2026-07-14 | 切换至官方 A3 ms-swift v4.3.0 镜像并完成 NPU 验证 | 已完成 | [查看报告](updates/v0.1.4_20260714_162727_官方A3镜像切换与NPU验证.md) |

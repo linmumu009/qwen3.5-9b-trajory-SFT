@@ -13,6 +13,113 @@ from typing import Any
 
 VERSION_RE = re.compile(r"_(\d{8}_v\d+)_openai\.jsonl$")
 
+CANONICAL_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "bash",
+            "description": "Execute a shell command in the current sandbox workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell command to execute."},
+                    "timeout": {
+                        "type": "integer",
+                        "description": "Optional timeout in seconds.",
+                        "minimum": 1,
+                    },
+                },
+                "required": ["command"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "read",
+            "description": "Read text from a file in the sandbox workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to read."},
+                    "offset": {
+                        "type": "integer",
+                        "description": "Optional zero-based line offset.",
+                        "minimum": 0,
+                    },
+                    "limit": {
+                        "type": "integer",
+                        "description": "Optional maximum number of lines to return.",
+                        "minimum": 1,
+                    },
+                },
+                "required": ["path"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "write",
+            "description": "Create or overwrite a text file in the sandbox workspace.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to write."},
+                    "content": {"type": "string", "description": "Complete file content."},
+                },
+                "required": ["path", "content"],
+                "additionalProperties": False,
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "edit",
+            "description": (
+                "Edit a text file using either an edits array or one oldText/newText replacement."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "File path to edit."},
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": {"type": "string"},
+                                "newText": {"type": "string"},
+                            },
+                            "required": ["oldText", "newText"],
+                            "additionalProperties": False,
+                        },
+                    },
+                    "oldText": {"type": "string"},
+                    "newText": {"type": "string"},
+                },
+                "required": ["path"],
+                "anyOf": [
+                    {"required": ["edits"]},
+                    {"required": ["oldText", "newText"]},
+                ],
+                "additionalProperties": False,
+            },
+        },
+    },
+]
+CANONICAL_TOOLS_JSON = json.dumps(
+    CANONICAL_TOOLS, ensure_ascii=False, separators=(",", ":")
+)
+
+
+def make_training_row(messages: list[dict[str, Any]]) -> dict[str, Any]:
+    """Build the documented ms-swift agent row with an explicit tool contract."""
+    return {"tools": CANONICAL_TOOLS_JSON, "messages": messages}
+
 
 def normalize_text(value: str) -> str:
     return unicodedata.normalize("NFKC", value).strip()
@@ -296,7 +403,7 @@ def main() -> None:
         ):
             report["excluded_without_tool_roundtrip"] += 1
             continue
-        training_row = {"messages": converted}
+        training_row = make_training_row(converted)
         metadata_row = {
             "source_file": args.input.name,
             "source_line": line_number,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from scripts.prepare_trajectory_sft import convert_messages
+from scripts.prepare_trajectory_sft import convert_messages, make_training_row
 
 
 def test_convert_openai_tool_trajectory_to_swift_agent_messages() -> None:
@@ -67,3 +67,12 @@ def test_convert_rejects_unanswered_tool_call() -> None:
         assert "unanswered tool calls" in str(exc)
     else:
         raise AssertionError("expected unanswered tool call to fail")
+
+
+def test_training_row_includes_canonical_tool_contract() -> None:
+    row = make_training_row([{"role": "user", "content": "question"}])
+    tools = json.loads(row["tools"])
+
+    assert [tool["function"]["name"] for tool in tools] == ["bash", "read", "write", "edit"]
+    assert tools[0]["function"]["parameters"]["required"] == ["command"]
+    assert tools[2]["function"]["parameters"]["required"] == ["path", "content"]
