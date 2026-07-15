@@ -163,6 +163,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--manifests-dir", type=Path, required=True)
     parser.add_argument("--verdicts-dir", type=Path, required=True)
+    parser.add_argument(
+        "--verdict-layout", choices=("fixed", "upstream_openai"), default="fixed"
+    )
     parser.add_argument("--model", default="/models/Qwen3.5-9B")
     parser.add_argument("--catalog-output", type=Path, required=True)
     parser.add_argument("--summary-output", type=Path, required=True)
@@ -198,7 +201,10 @@ def main() -> None:
         for data_file in sorted(args.data_dir.glob("*.jsonl")):
             version = detect_version(data_file)
             manifest_file, verdict_file = source_mapping(
-                data_file.name, args.manifests_dir, args.verdicts_dir
+                data_file.name,
+                args.manifests_dir,
+                args.verdicts_dir,
+                args.verdict_layout,
             )
             manifest_key = (manifest_file, version)
             verdict_key = (verdict_file, version)

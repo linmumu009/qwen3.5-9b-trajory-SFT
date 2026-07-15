@@ -6,6 +6,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
 from plan_trajectory_dataset import (  # noqa: E402
     choose_with_source_diversity,
+    phase_definitions,
     phase_for,
     stable_split,
 )
@@ -37,6 +38,12 @@ def test_phase_boundaries():
     assert phase_for({"input_tokens": 8192}) == ("core_8k", 0.10)
     assert phase_for({"input_tokens": 8193}) == ("extension_16k", 0.10)
     assert phase_for({"input_tokens": 32769}) is None
+
+
+def test_phase_boundaries_support_24k_production_limit():
+    phases = phase_definitions(24576)
+    assert phase_for({"input_tokens": 20000}, phases) == ("extension_24k", 0.10)
+    assert phase_for({"input_tokens": 25000}, phases) == ("long_32k_review", 0.10)
 
 
 def test_cap_prefers_source_diversity():

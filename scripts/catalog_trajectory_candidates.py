@@ -28,7 +28,39 @@ CANONICAL_TOOL_ARGUMENTS = {
 }
 
 
-def source_mapping(name: str, manifests: Path, verdicts: Path) -> tuple[Path, Path]:
+def source_mapping(
+    name: str,
+    manifests: Path,
+    verdicts: Path,
+    verdict_layout: str = "fixed",
+) -> tuple[Path, Path]:
+    version = detect_version(Path(name))
+    suffix = version.rsplit("_v", 1)[-1]
+    if verdict_layout == "upstream_openai":
+        if name.startswith("qwen3.6-27B_"):
+            manifest = manifests / "manifest.jsonl"
+            prefix = "qwen3.6-27B"
+        elif name.startswith("deepseek_"):
+            manifest = manifests / "trajectories_deepseek_v15_manifest.jsonl"
+            prefix = "aliyun-deepseek-v4-pro"
+        elif name.startswith("glm52_"):
+            manifest = manifests / "trajectories_glm52_v15_manifest.jsonl"
+            prefix = "aliyun-glm-5.2"
+        elif name.startswith("qwen37max_"):
+            manifest_name = (
+                "trajectories_qwen37max_manifest.jsonl"
+                if suffix == "15"
+                else f"trajectories_qwen37max_v{suffix}_manifest.jsonl"
+            )
+            manifest = manifests / manifest_name
+            prefix = "aliyun-qwen3.7-max"
+        else:
+            raise ValueError(f"No source mapping for {name}")
+        current = verdicts / f"{prefix}_{version}_openai.jsonl"
+        legacy = verdicts / f"{prefix}_v{suffix}_openai.jsonl"
+        return manifest, current if current.is_file() or not legacy.is_file() else legacy
+    if verdict_layout != "fixed":
+        raise ValueError(f"unsupported verdict layout: {verdict_layout}")
     if name.startswith("qwen3.6-27B_"):
         return manifests / "manifest.jsonl", verdicts / "qwen3.6-27B_sft_all_fixed.jsonl"
     if name.startswith("deepseek_"):
@@ -42,15 +74,14 @@ def source_mapping(name: str, manifests: Path, verdicts: Path) -> tuple[Path, Pa
             verdicts / "aliyun-glm-5.2_v15_fixed.jsonl",
         )
     if name.startswith("qwen37max_"):
-        version = detect_version(Path(name)).rsplit("_v", 1)[-1]
         manifest_name = (
             "trajectories_qwen37max_manifest.jsonl"
-            if version == "15"
-            else f"trajectories_qwen37max_v{version}_manifest.jsonl"
+            if suffix == "15"
+            else f"trajectories_qwen37max_v{suffix}_manifest.jsonl"
         )
         return (
             manifests / manifest_name,
-            verdicts / f"aliyun-qwen3.7-max_v{version}_fixed.jsonl",
+            verdicts / f"aliyun-qwen3.7-max_v{suffix}_fixed.jsonl",
         )
     raise ValueError(f"No source mapping for {name}")
 
@@ -129,6 +160,9 @@ def main() -> None:
     parser.add_argument("--data-dir", type=Path, required=True)
     parser.add_argument("--manifests-dir", type=Path, required=True)
     parser.add_argument("--verdicts-dir", type=Path, required=True)
+    parser.add_argument(
+        "--verdict-layout", choices=("fixed", "upstream_openai"), default="fixed"
+    )
     args = parser.parse_args()
 
     all_stats: Counter[str] = Counter()
@@ -141,7 +175,12 @@ def main() -> None:
 
     for data_file in sorted(args.data_dir.glob("*.jsonl")):
         version = detect_version(data_file)
-        manifest_file, verdict_file = source_mapping(data_file.name, args.manifests_dir, args.verdicts_dir)
+        manifest_file, verdict_file = source_mapping(
+            data_file.name,
+            args.manifests_dir,
+            args.verdicts_dir,
+            args.verdict_layout,
+        )
         manifest_lookup, manifest_order, manifest_source_lookup = load_manifest_data(manifest_file, version)
         verdict_rows, conflicts = load_verdicts(verdict_file, version)
         if conflicts:

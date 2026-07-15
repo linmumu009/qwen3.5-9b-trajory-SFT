@@ -5,7 +5,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 
-from catalog_trajectory_candidates import canonical_tools  # noqa: E402
+from catalog_trajectory_candidates import canonical_tools, source_mapping  # noqa: E402
 
 
 def call(name, arguments):
@@ -39,3 +39,20 @@ def test_edit_requires_a_complete_replacement():
         False,
         "invalid_argument_value",
     )
+
+
+def test_source_mapping_supports_upstream_openai_layout(tmp_path: Path):
+    verdicts = tmp_path / "verdicts"
+    verdicts.mkdir()
+    expected = verdicts / "aliyun-deepseek-v4-pro_20260628_v15_openai.jsonl"
+    expected.write_text("", encoding="utf-8")
+
+    manifest, verdict = source_mapping(
+        "deepseek_20260628_v15_openai.jsonl",
+        tmp_path / "manifests",
+        verdicts,
+        "upstream_openai",
+    )
+
+    assert manifest.name == "trajectories_deepseek_v15_manifest.jsonl"
+    assert verdict == expected

@@ -40,9 +40,22 @@ def stable_split(task_id: str, train_share: float, validation_share: float) -> s
     return "test"
 
 
-def phase_for(row: dict[str, Any]) -> tuple[str, float] | None:
+def phase_definitions(production_max_tokens: int) -> tuple[tuple[str, int, int, float], ...]:
+    if not 8192 < production_max_tokens < 32768:
+        raise ValueError("production max tokens must be between 8192 and 32768")
+    label = f"{production_max_tokens // 1024}k"
+    return (
+        ("core_8k", 0, 8192, 0.10),
+        (f"extension_{label}", 8192, production_max_tokens, 0.10),
+        ("long_32k_review", production_max_tokens, 32768, 0.10),
+    )
+
+
+def phase_for(
+    row: dict[str, Any], phases: tuple[tuple[str, int, int, float], ...] = PHASES
+) -> tuple[str, float] | None:
     tokens = int(row["input_tokens"])
-    for name, lower, upper, min_ratio in PHASES:
+    for name, lower, upper, min_ratio in phases:
         if lower < tokens <= upper:
             return name, min_ratio
     return None
@@ -100,6 +113,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--train-share", type=float, default=0.85)
     parser.add_argument("--validation-share", type=float, default=0.075)
     parser.add_argument("--min-final-answer-chars", type=int, default=50)
+    parser.add_argument("--production-max-tokens", type=int, default=16384)
     return parser.parse_args()
 
 
@@ -111,6 +125,7 @@ def main() -> None:
         raise ValueError("validation share leaves no test share")
     if args.max_per_task_per_phase < 1:
         raise ValueError("max-per-task-per-phase must be positive")
+    phases = phase_definitions(args.production_max_tokens)
 
     tokens = load_rows(args.token_catalog)
     quality = load_rows(args.content_quality_catalog)
@@ -124,7 +139,7 @@ def main() -> None:
     for key, token_row in tokens.items():
         row = dict(quality[key])
         row.update(token_row)
-        phase = phase_for(row)
+        phase = phase_for(row, phases)
         if phase is None:
             exclusion_reasons["over_32k"] += 1
             continue
@@ -202,6 +217,7 @@ def main() -> None:
             "validation": args.validation_share,
             "test": round(1 - args.train_share - args.validation_share, 6),
         },
+        "production_max_tokens": args.production_max_tokens,
         "phase_definitions": [
             {
                 "name": name,
@@ -209,7 +225,7 @@ def main() -> None:
                 "input_tokens_lte": upper,
                 "min_supervised_ratio": min_ratio,
             }
-            for name, lower, upper, min_ratio in PHASES
+            for name, lower, upper, min_ratio in phases
         ],
         "exclusion_reasons": dict(sorted(exclusion_reasons.items())),
         "dedupe": dict(sorted(dedupe_counts.items())),
@@ -231,7 +247,7 @@ def main() -> None:
             "input_tokens": sum(row["input_tokens"] for row in rows),
             "supervised_tokens": sum(row["supervised_tokens"] for row in rows),
         }
-    for phase_name, _, _, _ in PHASES:
+    for phase_name, _, _, _ in phases:
         rows = [row for row in selected if row["phase"] == phase_name]
         summary["by_phase"][phase_name] = {
             "records": len(rows),
