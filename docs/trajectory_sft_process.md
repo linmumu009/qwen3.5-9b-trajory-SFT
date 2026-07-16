@@ -25,10 +25,10 @@
 
 因此，本项目训练的是：
 
-\[
+$$
 P_\theta(\text{assistant 思考、工具调用、最终回答}\mid
 \text{系统、用户、工具定义、此前工具返回})
-\]
+$$
 
 ## 1. 输入数据：OpenAI-style JSONL
 
@@ -252,30 +252,30 @@ user → assistant action₁ → observation₁ → assistant action₂
 
 ### 3.1 序列化与分词
 
-记一条 JSON 轨迹为 \(D\)。chat template/serializer 将角色、工具 schema、消息边界和正文序列化为字符串：
+记一条 JSON 轨迹为 $D$。chat template/serializer 将角色、工具 schema、消息边界和正文序列化为字符串：
 
-\[
+$$
 s=S(D)
-\]
+$$
 
 tokenizer 再将其转为 token 序列：
 
-\[
+$$
 x_{1:T}=\tau(s),\qquad x_t\in\{1,\ldots,|V|\}
-\]
+$$
 
-其中 \(|V|\) 是词表大小，\(T\) 是序列总长度。角色标记、工具 JSON、换行和标点都会占 token，不能只按字符数估算训练长度。
+其中 $|V|$ 是词表大小，$T$ 是序列总长度。角色标记、工具 JSON、换行和标点都会占 token，不能只按字符数估算训练长度。
 
 ### 3.2 因果注意力
 
-decoder-only Transformer 使用因果注意力。位置 \(t\) 只能读取当前位置及其之前的 token：
+decoder-only Transformer 使用因果注意力。位置 $t$ 只能读取当前位置及其之前的 token：
 
-\[
+$$
 A_{t,s}=\begin{cases}
 0,&s\le t\\
 -\infty,&s>t
 \end{cases}
-\]
+$$
 
 所以：
 
@@ -285,95 +285,201 @@ A_{t,s}=\begin{cases}
 
 Transformer 的注意力基础见 [Attention Is All You Need](https://arxiv.org/abs/1706.03762)。
 
-### 3.3 loss mask
+### 3.3 loss mask / labels：它读取什么，输出什么，究竟 mask 什么
 
-为每个 token 定义监督指示量：
+#### 3.3.1 它读取的不是一段纯文本，而是“带角色边界的训练记录”
 
-\[
+本项目不是先把整条轨迹拼成纯文本，再靠关键词猜哪些地方要训练。实际入口是转换后的 ms-swift agent 记录：
+
+```json
+{
+  "tools": "[bash/read/write/edit 的 JSON Schema]",
+  "messages": [
+    {"role": "system", "content": "..."},
+    {"role": "user", "content": "..."},
+    {"role": "assistant", "content": "<think>...</think>", "loss": true},
+    {"role": "tool_call", "content": "{...}", "loss": true},
+    {"role": "tool_response", "content": "..."},
+    {"role": "assistant", "content": "<think>...</think>\n\n最终答案", "loss": true}
+  ]
+}
+```
+
+然后由 Qwen3.5 对应的 ms-swift template 编码：
+
+```python
+processor = get_processor("/models/Qwen3.5-9B")
+template = get_template(processor, loss_scale="default+ignore_empty_think")
+template.set_mode("train")
+encoded = template.encode(row)
+
+input_ids = encoded["input_ids"]
+labels = encoded["labels"]
+```
+
+构造 labels 时使用的信息是：
+
+1. `messages[i].role`：区分 system、user、assistant、tool_call、tool_response；
+2. chat template 产生的消息边界和特殊 token 区段；
+3. 当前 `loss_scale="default+ignore_empty_think"` 的分段规则；
+4. 转换记录中显式写入的 `loss` 属性。对不同 role，字段是否直接生效由模板实现决定，因此最终结果必须检查真实 labels，不能只看 JSON 字段名猜测；
+5. batch collator 产生的 padding 区域。
+
+它**不负责**判断 SQL 是否正确，也不会因为正文里出现 `6639` 就自动决定要不要监督。正确性由进入编码前的数据筛选解决；loss mask 只解决“哪一段是模型输出目标”。
+
+#### 3.3.2 它输出两个等长数组
+
+设真实 token 序列为 $x_{1:T}$。对每个 token 定义监督指示量：
+
+$$
 m_t=\begin{cases}
-1,&x_t\text{ 属于要学习的 assistant 输出区域}\\
-0,&x_t\text{ 属于 system/user/tools/observation/padding}
+1,&x_t\text{ 位于要学习的 assistant/tool-call 区域}\\
+0,&x_t\text{ 位于 tools/system/user/tool-response/padding 区域}
 \end{cases}
-\]
+$$
 
-训练实现通常构造 labels：
+labels 的逐位置构造为：
 
-\[
+$$
 y_t=\begin{cases}
 x_t,&m_t=1\\
-\text{IGNORE\_INDEX},&m_t=0
+-100,&m_t=0
 \end{cases}
-\]
+$$
 
-在 PyTorch/Hugging Face 体系中，`IGNORE_INDEX` 常取 `-100`。它只控制交叉熵是否计分，不控制 token 是否进入上下文。
+因此通常有：
 
-下表采用本项目当前的监督策略。其他项目如果不希望显式训练推理过程，可以把 assistant 推理区域也设为 \(m_t=0\)，但工具调用和最终回答是否监督仍要单独定义。
+```text
+len(input_ids) == len(labels)
 
-| 语义区域 | 输入中保留 | 参与 loss | 原因 |
-|---|:---:|:---:|---|
-| system 指令 | 是 | 否 | 是条件，不要求模型复述 |
-| tools schema | 是 | 否 | 是可用动作空间 |
-| user 问题 | 是 | 否 | 是条件，不训练模型模仿用户 |
-| assistant 推理 | 是 | 是 | 学习中间决策过程 |
-| assistant tool call | 是 | 是 | 学习工具选择和参数生成 |
-| tool observation | 是 | 否 | 环境给定事实，不应由模型伪造 |
-| assistant 最终回答 | 是 | 是 | 学习最终任务输出 |
-| padding | 是 | 否 | 仅用于批处理对齐 |
+input_ids[t] = 该位置真实 token id
+labels[t]    = 同一个 token id，或者 -100
+```
 
-特殊的角色起止 token 是否参与 loss 由 chat template 决定；上表描述的是语义区域，不绑定某个框架的特殊 token 细节。
+`-100` 是交叉熵的 `IGNORE_INDEX`：该位置不作为一道“预测题”计入 loss。它不删除 `input_ids[t]`，也不会阻止后续 token 注意到它。
+
+| 语义区域 | `input_ids` 中是否存在 | `labels` 中是什么 | 直接参与 loss | 后续 assistant 能否读取 |
+|---|:---:|---|:---:|:---:|
+| tools schema | 是 | `-100` | 否 | 是 |
+| system 指令 | 是 | `-100` | 否 | 是 |
+| user 问题 | 是 | `-100` | 否 | 是 |
+| assistant 推理 | 是 | 真实 token id | 是 | 是 |
+| assistant tool call | 是 | 真实 token id | 是 | 是 |
+| tool response / observation | 是 | `-100` | 否 | 是 |
+| assistant 最终回答 | 是 | 真实 token id | 是 | 是 |
+| batch padding | 是 | `-100` | 否 | 否，另由 attention mask 屏蔽 |
+
+特殊角色起止 token 是否计入监督由 Qwen chat template 决定。上表描述语义区域；精确边界以 `template.encode(row)` 生成的真实 labels 为准。
+
+#### 3.3.3 放到 `task_000201` 上逐段看
+
+| 实际轨迹区段 | `input_ids` | `labels` | 训练含义 |
+|---|:---:|---|---|
+| 注入的 bash/read/write/edit schema | 保留 | `-100` | 告诉模型有哪些工具，不要求模型复述 schema |
+| system：物流数据分析师规则 | 保留 | `-100` | 作为行为条件 |
+| user：查询 2026-06-19 总停留分钟数 | 保留 | `-100` | 作为任务条件 |
+| 前两轮目录/表枚举的 assistant 推理与调用 | 保留 | 真实 token id | 学习先定位数据库、再找表；公开节选省略了具体命令文本 |
+| 前两轮目录/表枚举的工具返回 | 保留 | `-100` | 提供下一步依据，不训练模型模仿环境输出 |
+| assistant：“检查 `fact_waybill_event` 表结构” | 保留 | 真实 token id | 学习为什么需要查 schema |
+| tool call：`.schema fact_waybill_event` | 保留 | 真实 token id | 学习生成工具名、命令和参数 |
+| tool response：含 `event_time`、`dwell_minutes` | 保留 | `-100` | 模型后续可据此写 SQL，但不预测数据库返回 |
+| assistant：“按日期过滤并对 `dwell_minutes` 求和” | 保留 | 真实 token id | 学习从 schema 推到聚合动作 |
+| tool call：`SELECT SUM(dwell_minutes) ...` | 保留 | 真实 token id | 学习正确 SQL |
+| tool response：`6639` | 保留 | `-100` | 最终回答可以读取；该数值本身没有直接 target loss |
+| assistant：“总和为 6639 分钟” | 保留 | 真实 token id | 学习忠实使用工具结果作答 |
+
+用语义分区做一个缩微示意；方括号代表一段 token，不代表 Qwen tokenizer 的真实切词：
+
+```text
+input_ids:
+[TOOLS] [SYSTEM] [USER] [THINK] [TOOL_CALL] [TOOL_RESPONSE:6639] [FINAL:6639分钟]
+
+labels:
+[ -100] [  -100] [-100] [真实id] [    真实id] [              -100] [       真实id]
+```
+
+真实编码结果为：
+
+$$
+T=3464,\qquad N_{supervised}=416,\qquad N_{masked}=3464-416=3048
+$$
+
+$$
+\text{监督密度}=\frac{416}{3464}=12.0092\%\approx12.01\%
+$$
+
+验证代码不是凭文本估计，而是直接统计：
+
+```python
+supervised_ids = [label for label in labels if label != -100]
+assert len(input_ids) == 3464
+assert len(supervised_ids) == 416
+```
+
+它还把监督 token 解码回文本，确认 `<tool_call>` 位于监督区，而 `<tool_response>` 不在监督区。
+
+#### 3.3.4 三种 mask 的职责必须分开
+
+| 名称 | 读取什么 | mask 掉什么 | 是否删除正文 |
+|---|---|---|:---:|
+| causal mask | token 的先后位置 | 对当前位置屏蔽所有未来 token | 否 |
+| padding/attention mask | batch 中的有效长度 | 屏蔽为了对齐而增加的 pad | 否 |
+| loss mask / labels | role、模板分段、loss 规则 | 把非监督 target 设为 `-100` | 否 |
+
+所以“mask 掉 observation”的完整说法是：**observation 在 labels 中被忽略，但在 input_ids 中保留；只要它位于过去，后续 assistant token 就能通过因果注意力读取它。**
 
 ### 3.4 下一个 token 的概率
 
-模型在位置 \(t\) 输出对词表中每个 token 的 logits：
+模型在位置 $t$ 输出对词表中每个 token 的 logits：
 
-\[
+$$
 z_t=f_\theta(x_{\le t})\in\mathbb{R}^{|V|}
-\]
+$$
 
-用 softmax 转为“下一个 token 是 \(v\)”的概率：
+用 softmax 转为“下一个 token 是 $v$”的概率：
 
-\[
+$$
 p_\theta(x_{t+1}=v\mid x_{\le t})
 =\frac{\exp(z_{t,v})}{\sum_{u=1}^{|V|}\exp(z_{t,u})}
-\]
+$$
 
-若一个极简词表的 logits 为 \([2,1,0]\)，正确 token 是第一个，则：
+若一个极简词表的 logits 为 $[2,1,0]$，正确 token 是第一个，则：
 
-\[
+$$
 p=\frac{e^2}{e^2+e^1+e^0}\approx0.665,
 \qquad -\log p\approx0.408
-\]
+$$
 
-如果该位置属于 observation，\(m_{t+1}=0\)，这项 loss 乘零；但 observation 仍会影响后续 assistant token 的条件概率。
+如果该位置属于 observation，$m_{t+1}=0$，这项 loss 乘零；但 observation 仍会影响后续 assistant token 的条件概率。
 
 ### 3.5 单条轨迹的目标函数
 
 teacher forcing 使用数据中的真实历史，而不是模型自己采样的历史。单条轨迹的 masked negative log-likelihood 为：
 
-\[
+$$
 \mathcal{L}(D;\theta)
 =-\frac{1}{N_D}
 \sum_{t=1}^{T-1}m_{t+1}
 \log p_\theta(x_{t+1}\mid x_{\le t})
-\]
+$$
 
 其中：
 
-\[
+$$
 N_D=\sum_{t=2}^{T}m_t
-\]
+$$
 
 是实际参与监督的 token 数。等价地，训练最大化所有监督 token 的条件似然：
 
-\[
+$$
 \prod_{t:m_t=1}p_\theta(x_t\mid x_{<t})
-\]
+$$
 
 ### 3.6 批次 loss
 
-对 batch \(\mathcal{B}\) 中的轨迹，常用 token-level mean：
+对 batch $\mathcal{B}$ 中的轨迹，常用 token-level mean：
 
-\[
+$$
 \mathcal{L}_{\mathcal{B}}
 =-\frac{
 \sum_{i\in\mathcal{B}}\sum_t m_{i,t}
@@ -381,7 +487,7 @@ N_D=\sum_{t=2}^{T}m_t
 }{
 \sum_{i\in\mathcal{B}}\sum_t m_{i,t}
 }
-\]
+$$
 
 因此“轨迹条数相同”不代表训练权重相同：监督 token 多的轨迹通常贡献更多项。若框架采用先按样本平均再按 batch 平均，权重会不同，必须在实验配置中明确。
 
@@ -389,55 +495,121 @@ N_D=\sum_{t=2}^{T}m_t
 
 ### Step 1：结构校验
 
-验证角色、tool call ID、工具 schema、参数类型、调用/返回闭环和最终回答。结构错误不能靠 mask 修复。
+- **一般操作**：验证角色、tool call ID、工具参数 JSON、调用/返回闭环和最终 assistant 输出。结构错误不能靠 mask 修复。
+- **`task_000201` 实际发生的事**：读取 `qwen3.6-27B_20260628_v41_openai.jsonl:199`；确认共有 4 次 tool call，每次都有且只有一个引用正确 ID 的 tool response；Bash 参数可解析为 JSON object；轨迹以最终 assistant 回答结束。
+- **本步产物**：一条结构闭合、可以继续做语义判断的 OpenAI-style 轨迹。此时还没有 token，也还没有 labels。
 
 ### Step 2：语义筛选
 
-确认最终答案正确、工具结果支持结论、工具调用没有使用未来信息。`verdict=correct` 只是证据之一，不应替代可重放验证或人工复核。
+- **一般操作**：确认最终答案正确、工具结果支持结论、工具调用没有使用未来信息。`verdict=correct` 只是证据之一，不应替代可重放验证或人工复核。
+- **`task_000201` 实际发生的事**：质量层为 `sql_result_verified`；schema observation 表明 `fact_waybill_event` 含 `event_time` 和 `dwell_minutes`；随后执行：
+
+  ```sql
+  SELECT SUM(dwell_minutes)
+  FROM fact_waybill_event
+  WHERE date(event_time) = '2026-06-19';
+  ```
+
+  工具返回 `6639`，最终回答也是 `6639 分钟`，问题日期、聚合字段、聚合函数、数值和单位一致。
+- **本步产物**：不是“格式看起来像对”，而是一条关键结果有可验证证据的 train 样本。
 
 ### Step 3：序列化
 
-用目标模型自己的 chat template 把 `tools + messages` 转成模型真实看到的序列。训练和推理必须使用同一套角色标记、工具调用表示和 system 注入规则。
+- **一般操作**：先把 OpenAI-style 消息转成 ms-swift agent 消息，再用目标模型自己的 chat template 序列化。训练和推理必须使用同一套角色标记、工具调用表示和 system 注入规则。
+- **`task_000201` 实际发生的事**：
+  1. `assistant.reasoning_content` 被包进 `<think>...</think>`；
+  2. 每个 `assistant.tool_calls[]` 被拆成独立 `role=tool_call`；
+  3. `role=tool` 被改成 `role=tool_response`；
+  4. 最终 assistant 内容继续保留；
+  5. 顶层补入 bash/read/write/edit 工具 schema。
+
+  其中关键聚合动作变为：
+
+  ```json
+  {
+    "role": "tool_call",
+    "content": "{\"name\":\"bash\",\"arguments\":{\"command\":\"sqlite3 ... SELECT SUM(dwell_minutes) ...\"}}",
+    "loss": true
+  }
+  ```
+
+- **本步产物**：`tools + messages` 仍是结构化对象；尚未变成 token。原始 call ID 已完成闭环校验，转换后的顺序消息不再依赖该 ID。
 
 ### Step 4：tokenize 与截断
 
-得到 `input_ids`。若超过最大长度，优先按完整“调用—返回—后续结论”片段裁剪或筛除；不能截断到只剩调用、没有 observation，或保留答案却删除支撑证据。
+- **一般操作**：Qwen chat template 先写入工具定义、角色标记、消息正文和边界标记，Qwen3.5 tokenizer 再生成 `input_ids`。若超过上限，优先整条筛除或按完整“调用—返回—后续结论”片段处理。
+- **`task_000201` 实际发生的事**：真实 Qwen3.5 编码长度为 3,464 tokens，小于当前 16K 上限，因此整条保留，没有截断任何调用、observation 或最终答案。
+- **本步产物**：长度为 3,464 的整数序列 `input_ids`。这 3,464 不等于原文字符数，其中包含工具 schema、角色特殊 token、JSON 标点和换行。
 
 ### Step 5：构造三种 mask
 
-- causal mask：阻止读取未来 token；
-- padding mask：阻止读取补齐 token；
-- loss mask/labels：只让 assistant 推理、动作和最终回答计入 loss。
+- **causal mask**：对这条轨迹，模型生成 `SELECT SUM(...)` 时可以看到此前的 schema observation，但不能看到未来工具返回 `6639`；生成最终答案时，`6639` 已经位于左侧历史，因此可见。
+- **padding mask**：样本自身有效长度是 3,464；若所在 batch 的最大长度更长，collator 会补 pad，并让这些 pad 不进入注意力。补多少取决于当时 batch，不能从单条记录固定推断。
+- **loss mask / labels**：template 依据 role 和分段规则生成等长 labels。tools/system/user/tool_response/pad 对应 `-100`；assistant 推理、tool call、最终回答对应真实 token id。
 
-三者作用不同，不能混用。
+本样本的精确计数是：
+
+```text
+input_ids 总数                  3,464
+labels != -100                   416  ← 直接计算 loss
+labels == -100                 3,048  ← 只作条件或 padding
+```
+
+尤其要看清：工具返回里的 `6639` 在 `input_ids` 中存在，但它自己的 label 是 `-100`；最终回答中的“6639 分钟”属于 assistant，labels 保留真实 token id。
+
+- **本步产物**：causal/attention 规则，以及长度与 `input_ids` 对齐的 labels。三者作用不同，不能混用。
 
 ### Step 6：teacher-forced forward
 
-模型一次并行读取整条训练序列，在每个位置输出下一 token 的 logits。虽然计算并行，概率分解仍是自回归的。
+- **一般操作**：模型一次并行读取整条真实训练序列，在每个位置输出对“下一个 token”的 logits；虽然计算并行，因果 mask 仍保证概率分解是自回归的。
+- **`task_000201` 实际发生的事**：
+
+  | 正在预测的 assistant 区段 | 允许读取的真实前缀 | 不能读取的未来 |
+  |---|---|---|
+  | “需要检查表结构”及 schema 调用 | system、用户问题、此前探索 observation | schema 返回、`6639`、最终答案 |
+  | `SELECT SUM(dwell_minutes)...` | 用户问题、此前动作、表结构中的字段 | 查询结果 `6639`、最终答案 |
+  | “总和为 6639 分钟” | 前面全部轨迹，包括 tool response `6639` | 后续 token |
+
+  teacher forcing 使用的是数据中的正确历史，而不是让当前模型先自由生成一遍 SQL。即使某个位置的 label 是 `-100`，模型通常仍会计算该位置 hidden state，使后续 supervised token 可以利用它。
+- **本步产物**：每个序列位置上的词表 logits，形状概念上为 `[sequence_length, vocabulary_size]`。
 
 ### Step 7：masked cross-entropy
 
-只对 labels 不等于 `IGNORE_INDEX` 的位置计算交叉熵并求平均。observation、用户问题等位置的直接梯度贡献为零。
+- **一般操作**：位置 $t$ 的 logits 预测位置 $t+1$ 的 token；实现对 logits 和 labels 做 shift 后，只保留 labels 不等于 `-100` 的位置。
+- **`task_000201` 实际发生的事**：3,464 个位置中有 416 个 supervised labels。单样本在标准 non-ignored-token mean 口径下：
+
+$$
+\mathcal{L}_{000201}
+=-\frac{1}{416}
+\sum_{j\in A_{000201}}
+\log P_\theta(x_j\mid x_{<j})
+$$
+
+$A_{000201}$ 包含 assistant 推理、工具调用 JSON/SQL 和最终答案对应的监督 token。tool response 中的 `6639` 不在这个集合；最终回答中的“6639 分钟”在这个集合。
+- **本步产物**：该样本的 loss 分子与 416 个有效 target 计数。进入 batch 后，通常与其他样本的非忽略 token 一起归一化。
 
 ### Step 8：反向传播与优化
 
 计算：
 
-\[
+$$
 g=\nabla_\theta\mathcal{L}_{\mathcal{B}}
-\]
+$$
 
-再由 AdamW 等优化器更新参数。梯度累积只是合并多个 micro-batch 的梯度后再执行 optimizer step，不改变目标函数本质。
+- **`task_000201` 实际发生的事**：如果它位于当前 micro-batch，它通过上述 416 个 target loss 对 batch 梯度作贡献。`6639` observation 没有自己的直接 loss，但会影响后续“6639 分钟”的 hidden state 和概率，因此会沿这条后续计算路径间接影响梯度。
+- **不能误写成**“这一条轨迹单独更新一次参数”：实际 optimizer step 可能聚合多个样本、多个 data-parallel rank 和多个 gradient-accumulation micro-batch。
+- **本步产物**：聚合、裁剪后的梯度，再由 AdamW 等优化器更新被允许训练的参数。梯度累积不改变目标函数本质。
 
-### Step 9：LoRA 更新
+### Step 9：确定更新全参数还是 LoRA 参数
 
-采用 LoRA 时，基础权重 \(W_0\) 冻结，只训练低秩增量：
+- **全参数 SFT**：本项目正式 Megatron/MindSpeed 训练链路允许基础模型参数参与更新。
+- **LoRA SFT**：本项目 smoke 链路也验证过 LoRA；此时基础权重 $W_0$ 冻结，只训练低秩增量：
 
-\[
+$$
 W=W_0+\frac{\alpha}{r}BA
-\]
+$$
 
-其中 \(A,B\) 可训练、秩为 \(r\)。loss 与全量微调相同，区别只是可训练参数集合不同。参见 [LoRA](https://arxiv.org/abs/2106.09685)。
+其中 $A,B$ 可训练、秩为 $r$。对 `task_000201` 而言，输入、labels、416 个监督 token 和 masked cross-entropy 都不变；变化的只是梯度最终允许更新哪些参数。参见 [LoRA](https://arxiv.org/abs/2106.09685)。
 
 ## 5. observation 到底发生了什么
 
@@ -449,19 +621,19 @@ W=W_0+\frac{\alpha}{r}BA
 
 训练目标包含：
 
-\[
+$$
 \mathcal{L}
 =-\log P_\theta(A_1\mid U)
 -\log P_\theta(A_2\mid U,A_1,O_1)
-\]
+$$
 
 但不包含：
 
-\[
+$$
 -\log P_\theta(O_1\mid U,A_1)
-\]
+$$
 
-因为 \(O_1\) 是环境输出，不是 assistant 应生成的动作。
+因为 $O_1$ 是环境输出，不是 assistant 应生成的动作。
 
 所以“mask 掉 observation”的准确含义是：
 
@@ -512,9 +684,9 @@ W=W_0+\frac{\alpha}{r}BA
 
 训练成本由 token 数而不是文件条数决定。工具返回经常占大部分上下文，却不参与 loss，所以应同时统计：
 
-\[
+$$
 \text{监督密度}=\frac{\text{supervised tokens}}{\text{input tokens}}
-\]
+$$
 
 监督密度过低意味着大量显存和计算用于读取 observation，只有少量 token 提供梯度。
 
