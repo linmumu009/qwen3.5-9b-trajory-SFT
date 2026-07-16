@@ -6,7 +6,7 @@
 
 ## 当前进展
 
-截至 2026-07-15：
+截至 2026-07-16：
 
 - `datasets/` 已按 `open_source/` 与 `sandboxes/` 两仓分立方案重组。
 - 149 个扁平化沙箱已拉回本地，共约 3.3 GB。
@@ -40,13 +40,16 @@
 - Transformers/FSDP2 全参链路已完成故障定位：无 CPU offload 时可运行 8 个优化器步但在长样本反向阶段 OOM；仅激活卸载在第 2 步 OOM；参数与激活全卸载会因 HCCL 不支持 CPU DTensor collective 而在梯度裁剪阶段退出，因此不再作为本轮生产方案。
 - 已切换至镜像内置的 Megatron-Core 0.16.0 + MindSpeed 0.16.0，采用 `TP4 / PP2 / DP2`、sequence parallel、distributed optimizer 和 full recompute；Qwen3.5-9B 的 32 层、16 个注意力头、4 个 KV 头均与该拓扑整除匹配。
 - 已从 2,028 条候选中按真实 Qwen3.5 token 选择最长 32 条（15,913–16,374 tokens）完成两步全参压力测试：两步均成功，框架显存最高 27.85 GiB，`npu-smi` 逐卡物理峰值最高 34.32 GiB，退出码为 0。
-- 已启动 16 卡 Qwen3.5-9B 全参轨迹 SFT 正式任务：16K、global batch 16、150 步、每 15 步保存完整 MCore 模型/优化器/RNG、最多保留 10 份；首个 172 GiB `checkpoint-15` 已成功写入且训练在保存后继续，运行目录为 `/data3/llin/trajory_sft/runs/qwen35_9b_megatron_tp4_pp2_dp2_16k_2028_150steps_20260715_173250`。
+- 16 卡 Qwen3.5-9B 全参轨迹 SFT 正式任务已正常完成 150/150 步，退出码为 0，总训练时长 1 小时 16 分 38 秒；10 份 MCore 检查点均完整保存，步数为 15、30、45、60、75、90、105、120、135、150，每份约 172 GiB。
+- 已将 10 份 MCore 检查点全部导出为独立 Qwen3.5 Hugging Face BF16 safetensors 模型，统一位于 `/data3/llin/trajory_sft/exports/qwen35_9b_megatron_16k_2028_150steps_hf`；每份含 4 个权重分片、760 个索引张量，权重文件共 18,820,260,968 字节，不含 optimizer、RNG 或 `.distcp`。
+- 10 份导出模型已全部通过 safetensors 头部、索引、配置、tokenizer、chat template 和 processor 验收，10 个权重分片指纹均唯一；`checkpoint-150-hf` 已通过 `swift deploy` 的 OpenAI 兼容 `/v1/models` 与 `/v1/chat/completions` HTTP 200 实测，临时服务随后已关闭并释放 NPU。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
-| v0.6.0 | 2026-07-15 | 切换 Megatron/MindSpeed TP4/PP2/DP2，完成 16K 最长样本压力测试并启动 150 步全参轨迹 SFT | 运行中 | [查看报告](updates/v0.6.0_20260715_173250_Megatron并行全参轨迹SFT.md) |
+| v0.7.0 | 2026-07-16 | 完成 150 步全参轨迹 SFT，将 10 个检查点导出为可直接部署的 HF BF16 模型并通过 API 验收 | 已完成 | [查看报告](updates/v0.7.0_20260716_103324_十个训练检查点HF模型导出与API验收.md) |
+| v0.6.0 | 2026-07-15 | 切换 Megatron/MindSpeed TP4/PP2/DP2，完成 16K 最长样本压力测试并启动 150 步全参轨迹 SFT | 已完成 | [查看报告](updates/v0.6.0_20260715_173250_Megatron并行全参轨迹SFT.md) |
 | v0.5.2 | 2026-07-15 | 独立保存 27 条 16K 强验证轨迹作为训练 smoke 数据 | 已完成 | [查看报告](updates/v0.5.2_20260715_153810_27条强验证训练Smoke文件.md) |
 | v0.5.1 | 2026-07-15 | 将 2,028 条 16K 内 train 候选合并为单一 ms-swift JSONL | 已完成 | [查看报告](updates/v0.5.1_20260715_153138_16K训练候选单文件合并.md) |
 | v0.5.0 | 2026-07-15 | 完成上游 correct 的确定性筛选与四类物化，验证 24K 后恢复 16K 生产上限 | 已完成 | [查看报告](updates/v0.5.0_20260715_144458_上游correct确定性筛选与分层物化.md) |
