@@ -44,11 +44,13 @@
 - 已将 10 份 MCore 检查点全部导出为独立 Qwen3.5 Hugging Face BF16 safetensors 模型，统一位于 `/data3/llin/trajory_sft/exports/qwen35_9b_megatron_16k_2028_150steps_hf`；每份含 4 个权重分片、760 个索引张量，权重文件共 18,820,260,968 字节，不含 optimizer、RNG 或 `.distcp`。
 - 10 份导出模型已全部通过 safetensors 头部、索引、配置、tokenizer、chat template 和 processor 验收，10 个权重分片指纹均唯一；`checkpoint-150-hf` 已通过 `swift deploy` 的 OpenAI 兼容 `/v1/models` 与 `/v1/chat/completions` HTTP 200 实测，临时服务随后已关闭并释放 NPU。
 - 已新增框架无关的轨迹 SFT 原理材料，从 OpenAI-style JSONL、因果注意力、loss mask、next-token softmax/交叉熵推导到参数更新、在线工具闭环与评测，明确 observation“保留为上下文但不参与 loss”。
+- 已从 2,028 条 16K train 候选中选取一条 3,464-token SQL 强验证轨迹，追溯同源 OpenAI 原始记录并作为材料实例，逐消息标注 loss mask 和 OpenAI→ms-swift 映射。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
+| v0.7.2 | 2026-07-16 | 用 2,028 条候选中的真实强验证轨迹补充 OpenAI 格式和 mask 实例 | 已完成 | [查看报告](updates/v0.7.2_20260716_165238_真实轨迹示例与格式映射.md) |
 | v0.7.1 | 2026-07-16 | 新增严谨精炼的轨迹 SFT 输入格式、数学目标与端到端过程说明 | 已完成 | [查看报告](updates/v0.7.1_20260716_163146_轨迹SFT过程说明材料.md) |
 | v0.7.0 | 2026-07-16 | 完成 150 步全参轨迹 SFT，将 10 个检查点导出为可直接部署的 HF BF16 模型并通过 API 验收 | 已完成 | [查看报告](updates/v0.7.0_20260716_103324_十个训练检查点HF模型导出与API验收.md) |
 | v0.6.0 | 2026-07-15 | 切换 Megatron/MindSpeed TP4/PP2/DP2，完成 16K 最长样本压力测试并启动 150 步全参轨迹 SFT | 已完成 | [查看报告](updates/v0.6.0_20260715_173250_Megatron并行全参轨迹SFT.md) |

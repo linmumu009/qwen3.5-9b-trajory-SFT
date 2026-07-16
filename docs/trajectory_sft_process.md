@@ -95,7 +95,122 @@ P_\theta(\text{assistant 思考、工具调用、最终回答}\mid
 
 OpenAI 的函数调用流程也是“提供工具定义 → 模型返回 tool call → 应用执行工具 → 将带关联 ID 的工具输出追加到上下文 → 模型继续回答”。[OpenAI Function Calling](https://developers.openai.com/api/docs/guides/function-calling)
 
-### 1.3 数据不变量
+### 1.3 本项目真实样本：从 2,028 条候选追溯到 OpenAI 原始记录
+
+`train_candidates_16k_2028.jsonl` 本身不是原始 OpenAI 格式，而是已经转换好的 ms-swift agent JSONL。它由 27 条 SQL 强验证轨迹和 2,001 条待复核轨迹组成。为了让本材料保持框架无关，这里从其中选择一条强验证 train 样本，再追溯到同一条原始 OpenAI-style 记录。
+
+样本定位与质量信息：
+
+| 字段 | 值 |
+|---|---|
+| source | `qwen3.6-27B_20260628_v41_openai.jsonl:199` |
+| task_id | `task_000201` |
+| split | `train` |
+| 类型 | DWH/SQL 聚合 |
+| 质量证据 | `sql_result_verified` |
+| Qwen3.5 输入长度 | 3,464 tokens |
+| 监督长度 | 416 tokens |
+| 完整工具调用 | 4 次 |
+
+真实轨迹的问题是：
+
+```text
+我想查一下 2026-06-19 那天运单轨迹事件里所有停留时长（分钟）总共是多少。
+```
+
+下面是同一条原始 OpenAI 轨迹的关键步骤节选。为便于汇报，只省略了与数学过程无关的目录枚举和数据表列表；表结构、聚合 SQL、工具结果和最终答案保持原义。
+
+```json
+{
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个物流数据分析师。你可以使用 Bash 工具执行 sqlite3 命令查询数据库。分析数据时，先思考需要什么数据，再写 SQL 查询，最后根据查询结果给出分析结论。"
+    },
+    {
+      "role": "user",
+      "content": "我想查一下2026-06-19那天运单轨迹事件里所有停留时长（分钟）总共是多少。"
+    },
+    {
+      "role": "assistant",
+      "content": "\n\n",
+      "reasoning_content": "fact_waybill_event 表可能是运单轨迹事件表，需要先检查表结构。",
+      "tool_calls": [
+        {
+          "id": "call_schema",
+          "type": "function",
+          "function": {
+            "name": "bash",
+            "arguments": "{\"command\":\"sqlite3 /workspace/logistics.sqlite '.schema fact_waybill_event'\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_schema",
+      "content": "CREATE TABLE fact_waybill_event (..., event_time TEXT, ..., dwell_minutes INTEGER);"
+    },
+    {
+      "role": "assistant",
+      "content": "\n\n",
+      "reasoning_content": "表中存在 dwell_minutes 字段，现在按 event_time 的日期过滤并求和。",
+      "tool_calls": [
+        {
+          "id": "call_sum",
+          "type": "function",
+          "function": {
+            "name": "bash",
+            "arguments": "{\"command\":\"sqlite3 /workspace/logistics.sqlite \\\"SELECT SUM(dwell_minutes) FROM fact_waybill_event WHERE date(event_time) = '2026-06-19';\\\"\"}"
+          }
+        }
+      ]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_sum",
+      "content": "6639\n"
+    },
+    {
+      "role": "assistant",
+      "reasoning_content": "查询结果表明总停留时长为 6639 分钟。",
+      "content": "2026-06-19 当天运单轨迹事件中所有停留时长的总和为 **6639 分钟**。"
+    }
+  ]
+}
+```
+
+这条真实轨迹的监督区域为：
+
+| 步骤 | 角色 | 是否参与 loss | 解释 |
+|---|---|:---:|---|
+| 系统规则 | system | 否 | 训练条件 |
+| 用户问题 | user | 否 | 训练条件 |
+| “检查表结构”推理 + schema tool call | assistant | 是 | 学习分析动作 |
+| `CREATE TABLE ... dwell_minutes` | tool | 否 | observation，保留为上下文 |
+| “按日期求和”推理 + `SELECT SUM(...)` | assistant | 是 | 学习 SQL 决策 |
+| `6639` | tool | 否 | observation，保留为上下文 |
+| “6639 分钟”最终回答 | assistant | 是 | 学习基于结果作答 |
+
+因果关系非常明确：模型生成 `SELECT SUM(...)` 时还看不到未来的 `6639`；生成最终答案时，`6639` 已经作为过去的 observation 出现在上下文中。
+
+### 1.4 原始 OpenAI 与 2,028 条训练文件的对应关系
+
+| 原始 OpenAI-style 字段 | 2,028 条文件中的训练表示 |
+|---|---|
+| `assistant.reasoning_content` | 合并进 assistant 的 `<think>…</think>` |
+| `assistant.tool_calls[]` | 独立的 `role=tool_call` 消息 |
+| `role=tool` | `role=tool_response` |
+| `assistant.content` | assistant 内容，最终答案继续参与 loss |
+| 原始记录缺少顶层 `tools` | 转换时补齐 bash/read/write/edit 工具 schema |
+
+因此：
+
+- 若讲输入数据协议，应展示上面的原始 OpenAI-style 记录；
+- 若讲本项目送入 ms-swift 的实际文件，再展示转换后的 agent 消息；
+- 两者描述的是同一条轨迹，只是外部协议与框架内部表示不同。
+
+### 1.5 数据不变量
 
 一条轨迹进入训练前至少满足：
 
