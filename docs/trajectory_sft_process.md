@@ -97,6 +97,8 @@ OpenAI 的函数调用流程也是“提供工具定义 → 模型返回 tool ca
 
 ### 1.3 本项目真实样本：从 2,028 条候选追溯到 OpenAI 原始记录
 
+配套的单页 HTML 教学报告见 [`trajectory_sft_task_000201_walkthrough.html`](trajectory_sft_task_000201_walkthrough.html)：它以本节同一条轨迹为例，逐步推导格式转换、Qwen 模板编码、loss mask、因果可见性、交叉熵和参数更新。
+
 `train_candidates_16k_2028.jsonl` 本身不是原始 OpenAI 格式，而是已经转换好的 ms-swift agent JSONL。它由 27 条 SQL 强验证轨迹和 2,001 条待复核轨迹组成。为了让本材料保持框架无关，这里从其中选择一条强验证 train 样本，再追溯到同一条原始 OpenAI-style 记录。
 
 样本定位与质量信息：

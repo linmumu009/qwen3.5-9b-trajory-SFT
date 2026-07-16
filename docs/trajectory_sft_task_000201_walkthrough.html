@@ -1,0 +1,1041 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="description" content="以 task_000201 真实轨迹为例，严格推导从 OpenAI-style 消息到 Qwen3.5-9B 轨迹 SFT 参数更新的全过程。">
+  <title>一条真实轨迹如何变成一次 SFT 参数更新</title>
+  <style>
+    :root {
+      --ink: #17233a;
+      --muted: #5f6b7a;
+      --line: #dfe5ec;
+      --paper: #ffffff;
+      --canvas: #f4f7fa;
+      --navy: #102a43;
+      --blue: #1769aa;
+      --blue-soft: #eaf4fb;
+      --green: #18794e;
+      --green-soft: #e9f7ef;
+      --amber: #9a6700;
+      --amber-soft: #fff6d9;
+      --red: #b42318;
+      --red-soft: #fff0ee;
+      --violet: #6941c6;
+      --violet-soft: #f2edff;
+      --shadow: 0 18px 48px rgba(16, 42, 67, 0.10);
+      --radius: 18px;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--canvas);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", "Microsoft YaHei", "PingFang SC", sans-serif;
+      line-height: 1.72;
+    }
+    a { color: var(--blue); text-underline-offset: 3px; }
+    code, pre, .mono, .formula {
+      font-family: "Cascadia Code", "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    }
+    code {
+      padding: .08em .35em;
+      border-radius: 5px;
+      background: #eef2f6;
+      font-size: .92em;
+    }
+
+    .layout {
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      max-width: 1560px;
+      margin: 0 auto;
+      min-height: 100vh;
+    }
+    .sidebar {
+      position: sticky;
+      top: 0;
+      height: 100vh;
+      padding: 28px 22px;
+      color: #d9e6f2;
+      background: var(--navy);
+      overflow: auto;
+    }
+    .sidebar .brand {
+      display: block;
+      margin-bottom: 22px;
+      color: #fff;
+      font-weight: 800;
+      letter-spacing: .02em;
+    }
+    .sidebar small { color: #9fb3c8; }
+    .sidebar nav { margin-top: 24px; }
+    .sidebar nav a {
+      display: block;
+      margin: 3px 0;
+      padding: 8px 10px;
+      color: #c9d8e6;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 14px;
+    }
+    .sidebar nav a:hover { color: #fff; background: rgba(255,255,255,.09); }
+    .sidebar .side-note {
+      margin-top: 28px;
+      padding: 12px;
+      border: 1px solid rgba(255,255,255,.14);
+      border-radius: 10px;
+      color: #b9cadb;
+      font-size: 12px;
+    }
+
+    main {
+      min-width: 0;
+      padding: 44px clamp(24px, 5vw, 76px) 84px;
+    }
+    .hero, section {
+      max-width: 1120px;
+      margin: 0 auto 26px;
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      box-shadow: var(--shadow);
+    }
+    .hero { padding: clamp(30px, 5vw, 66px); }
+    section { padding: clamp(26px, 4vw, 48px); }
+    .eyebrow {
+      margin: 0 0 10px;
+      color: var(--blue);
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: .13em;
+      text-transform: uppercase;
+    }
+    h1 {
+      max-width: 900px;
+      margin: 0;
+      color: var(--navy);
+      font-size: clamp(34px, 5vw, 62px);
+      line-height: 1.12;
+      letter-spacing: -.045em;
+    }
+    .lead {
+      max-width: 900px;
+      margin: 22px 0 0;
+      color: #415269;
+      font-size: clamp(17px, 2vw, 21px);
+    }
+    h2 {
+      margin: 0 0 20px;
+      color: var(--navy);
+      font-size: clamp(25px, 3vw, 34px);
+      line-height: 1.25;
+      letter-spacing: -.02em;
+    }
+    h3 { margin: 30px 0 12px; color: #243b53; font-size: 20px; }
+    h4 { margin: 22px 0 8px; color: #334e68; font-size: 16px; }
+    p { margin: 10px 0; }
+    .section-kicker {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--blue);
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: .12em;
+    }
+    .muted { color: var(--muted); }
+    .small { font-size: 13px; }
+
+    .actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+    button {
+      padding: 10px 15px;
+      color: var(--navy);
+      background: #fff;
+      border: 1px solid #b9c7d5;
+      border-radius: 9px;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    button:hover { border-color: var(--blue); color: var(--blue); }
+
+    .metrics {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+      margin-top: 34px;
+    }
+    .metric {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: #fbfcfe;
+    }
+    .metric strong { display: block; color: var(--navy); font-size: 28px; line-height: 1.1; }
+    .metric span { color: var(--muted); font-size: 12px; }
+
+    .callout {
+      margin: 18px 0;
+      padding: 16px 18px;
+      border-left: 5px solid var(--blue);
+      border-radius: 8px;
+      background: var(--blue-soft);
+    }
+    .callout.good { border-color: var(--green); background: var(--green-soft); }
+    .callout.warn { border-color: var(--amber); background: var(--amber-soft); }
+    .callout.danger { border-color: var(--red); background: var(--red-soft); }
+    .callout strong { color: var(--navy); }
+
+    .grid-2, .grid-3 {
+      display: grid;
+      gap: 16px;
+      margin: 18px 0;
+    }
+    .grid-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .grid-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .card {
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    .card h3, .card h4 { margin-top: 0; }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 9px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 800;
+      white-space: nowrap;
+    }
+    .badge.exact { color: var(--green); background: var(--green-soft); }
+    .badge.derived { color: var(--violet); background: var(--violet-soft); }
+    .badge.omitted { color: var(--amber); background: var(--amber-soft); }
+
+    .table-wrap { width: 100%; overflow-x: auto; margin: 18px 0; }
+    table { width: 100%; border-collapse: collapse; font-size: 14px; }
+    th, td { padding: 12px 13px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
+    th { color: #334e68; background: #f5f8fb; font-size: 12px; letter-spacing: .03em; }
+    tr:last-child td { border-bottom: 0; }
+
+    pre {
+      margin: 16px 0;
+      padding: 19px;
+      color: #e6edf3;
+      background: #0e1b2a;
+      border-radius: 12px;
+      overflow: auto;
+      line-height: 1.58;
+      font-size: 13px;
+    }
+    pre code { padding: 0; color: inherit; background: transparent; }
+    .formula {
+      margin: 16px 0;
+      padding: 18px 20px;
+      color: #132f4c;
+      background: #f1f6fb;
+      border: 1px solid #d4e4f1;
+      border-radius: 10px;
+      text-align: center;
+      font-size: clamp(15px, 2vw, 19px);
+      overflow-x: auto;
+    }
+    .formula .sub { display: block; margin-top: 8px; color: var(--muted); font: 13px/1.5 inherit; }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(0, 1fr));
+      gap: 8px;
+      margin: 22px 0;
+    }
+    .pipe-node {
+      position: relative;
+      padding: 15px 12px;
+      border: 1px solid #cbd8e5;
+      border-radius: 10px;
+      background: #f8fafc;
+      text-align: center;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .pipe-node:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: -12px;
+      top: 50%;
+      z-index: 2;
+      color: var(--blue);
+      transform: translateY(-50%);
+      font-size: 18px;
+    }
+
+    .mask-summary {
+      display: grid;
+      grid-template-columns: 3048fr 416fr;
+      min-height: 58px;
+      margin: 18px 0 8px;
+      overflow: hidden;
+      border: 1px solid #ccd8e3;
+      border-radius: 11px;
+    }
+    .mask-summary > div { display: flex; align-items: center; justify-content: center; padding: 10px; font-size: 12px; font-weight: 800; }
+    .mask-context { color: #415269; background: #e9eef4; }
+    .mask-target { color: #fff; background: var(--green); min-width: 118px; }
+    .token-demo {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin: 16px 0;
+      padding: 16px;
+      border: 1px dashed #bdcbd9;
+      border-radius: 10px;
+      background: #fbfcfd;
+    }
+    .token {
+      padding: 5px 8px;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      font: 12px/1.3 "Cascadia Code", Consolas, monospace;
+    }
+    .token.context { color: #526170; background: #e9eef4; }
+    .token.observe { color: #8a5200; background: #fff0c2; }
+    .token.supervised { color: #11643f; background: #dff3e7; border-color: #9fd2b6; }
+    body.mask-focus .token.context, body.mask-focus .token.observe { opacity: .24; }
+
+    .steps { counter-reset: surgery; margin: 20px 0; }
+    .step {
+      position: relative;
+      margin: 0 0 14px;
+      padding: 20px 20px 20px 68px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #fff;
+    }
+    .step::before {
+      counter-increment: surgery;
+      content: counter(surgery);
+      position: absolute;
+      left: 18px;
+      top: 18px;
+      display: grid;
+      width: 34px;
+      height: 34px;
+      place-items: center;
+      color: #fff;
+      background: var(--blue);
+      border-radius: 50%;
+      font-weight: 800;
+    }
+    .step h3 { margin: 0 0 6px; font-size: 18px; }
+    .io {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-top: 12px;
+      font-size: 13px;
+    }
+    .io div { padding: 10px 12px; border-radius: 8px; background: #f5f8fb; }
+    .io strong { color: var(--navy); }
+
+    .causal-grid {
+      display: grid;
+      grid-template-columns: 190px 1fr 1fr;
+      gap: 1px;
+      overflow: hidden;
+      margin: 20px 0;
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: var(--line);
+    }
+    .causal-grid > div { padding: 13px; background: #fff; font-size: 13px; }
+    .causal-grid .head { color: #334e68; background: #f4f7fa; font-weight: 800; }
+    .yes { color: var(--green); font-weight: 800; }
+    .no { color: var(--red); font-weight: 800; }
+
+    .checklist { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 10px 18px; margin: 16px 0; padding: 0; list-style: none; }
+    .checklist li { position: relative; padding: 12px 12px 12px 40px; border: 1px solid var(--line); border-radius: 9px; background: #fbfcfd; }
+    .checklist li::before { content: "✓"; position: absolute; left: 13px; top: 11px; color: var(--green); font-weight: 900; }
+    details { margin: 14px 0; border: 1px solid var(--line); border-radius: 10px; background: #fbfcfd; }
+    summary { padding: 13px 16px; cursor: pointer; color: #243b53; font-weight: 800; }
+    details > div { padding: 0 16px 16px; }
+    .footer { max-width: 1120px; margin: 36px auto 0; color: var(--muted); font-size: 12px; text-align: center; }
+
+    @media (max-width: 1040px) {
+      .layout { display: block; }
+      .sidebar { position: relative; width: auto; height: auto; padding: 18px 22px; }
+      .sidebar nav { display: flex; gap: 4px; overflow-x: auto; margin-top: 12px; }
+      .sidebar nav a { flex: 0 0 auto; }
+      .sidebar .side-note { display: none; }
+      main { padding-top: 24px; }
+    }
+    @media (max-width: 720px) {
+      main { padding-inline: 12px; }
+      .metrics, .grid-2, .grid-3, .checklist, .io { grid-template-columns: 1fr; }
+      .pipeline { grid-template-columns: 1fr; }
+      .pipe-node:not(:last-child)::after { content: "↓"; right: auto; left: 50%; top: auto; bottom: -17px; transform: translateX(-50%); }
+      .causal-grid { grid-template-columns: 120px 1fr; }
+      .causal-grid > div:nth-child(3n) { grid-column: 2; }
+      .step { padding-left: 58px; }
+    }
+    @media print {
+      body { background: #fff; font-size: 10.5pt; }
+      .layout { display: block; max-width: none; }
+      .sidebar, .actions { display: none !important; }
+      main { padding: 0; }
+      .hero, section { max-width: none; margin: 0 0 16px; padding: 20px; border: 0; border-radius: 0; box-shadow: none; break-inside: avoid; }
+      h1 { font-size: 30pt; }
+      h2 { break-after: avoid; }
+      pre { white-space: pre-wrap; word-break: break-word; }
+      a { color: inherit; text-decoration: none; }
+      .step, .card, table, .formula { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="layout">
+    <aside class="sidebar">
+      <span class="brand">Trajectory SFT · Case 000201</span>
+      <small>单条真实轨迹的可审计推导</small>
+      <nav aria-label="报告目录">
+        <a href="#conclusion">0. 结论</a>
+        <a href="#evidence">1. 证据边界</a>
+        <a href="#sample">2. 原始轨迹</a>
+        <a href="#conversion">3. 格式转换</a>
+        <a href="#encoding">4. 模板与分词</a>
+        <a href="#mask">5. Loss Mask</a>
+        <a href="#causality">6. 因果性</a>
+        <a href="#loss">7. 概率与 Loss</a>
+        <a href="#update">8. 参数更新</a>
+        <a href="#surgery">9. 手术式流程</a>
+        <a href="#validation">10. 验收</a>
+        <a href="#appendix">附录</a>
+      </nav>
+      <div class="side-note">
+        报告版本 v0.7.3<br>
+        样本：task_000201<br>
+        生成日期：2026-07-16<br>
+        外部依赖：无，可离线打开
+      </div>
+    </aside>
+
+    <main>
+      <header class="hero" id="top">
+        <p class="eyebrow">A worked example · 像解数学题一样推导，像做手术一样核对</p>
+        <h1>一条真实轨迹，如何变成一次 SFT 参数更新</h1>
+        <p class="lead">
+          以 2,028 条候选中的真实 SQL 强验证轨迹 <code>task_000201</code> 为唯一贯穿案例，
+          从 OpenAI-style 消息开始，逐步走到 Qwen3.5-9B 的序列化、token、标签、masked cross-entropy、梯度和参数更新。
+        </p>
+        <div class="metrics" aria-label="样本核心指标">
+          <div class="metric"><strong>3,464</strong><span>真实 Qwen3.5 输入 token</span></div>
+          <div class="metric"><strong>416</strong><span>直接参与 loss 的 token</span></div>
+          <div class="metric"><strong>12.01%</strong><span>监督密度 416 ÷ 3,464</span></div>
+          <div class="metric"><strong>6,639</strong><span>工具查询得到的分钟数</span></div>
+        </div>
+        <div class="actions">
+          <button type="button" onclick="window.print()">打印 / 导出 PDF</button>
+          <button type="button" id="maskToggle">突出监督 token</button>
+        </div>
+      </header>
+
+      <section id="conclusion">
+        <span class="section-kicker">0 · 先写答案</span>
+        <h2>这条轨迹训练的到底是什么？</h2>
+        <div class="callout good">
+          <strong>答案：</strong>仍然是 decoder-only 语言模型的“预测下一个 token”。不同之处不是换了新 loss，
+          而是把 assistant 的中间推理、工具调用和最终回答都作为正确答案；system、user、工具定义和工具返回只作条件。
+        </div>
+        <div class="formula">
+          L<sub>sample</sub> = − (1 / 416) · Σ<sub>j∈A</sub> log P<sub>θ</sub>(x<sub>j</sub> | x<sub>&lt;j</sub>)
+          <span class="sub">A 是本样本 416 个监督 token 的位置集合；其余 3,048 个位置不直接计入交叉熵。</span>
+        </div>
+        <p>
+          对这条数据，模型要学习三类行为：先分析需要查什么、再生成可执行的 Bash/SQL 工具调用、最后根据工具返回的
+          <code>6639</code> 给出“6,639 分钟”的答案。工具返回本身不是模型应该伪造的输出，因此不作为预测目标。
+        </p>
+      </section>
+
+      <section id="evidence">
+        <span class="section-kicker">1 · 术前核对</span>
+        <h2>证据边界：哪些是原文，哪些是推导</h2>
+        <p>严谨讲解的第一步不是公式，而是区分“数据里确实存在”与“为了教学作出的抽象”。</p>
+        <div class="grid-3">
+          <div class="card">
+            <span class="badge exact">原始证据</span>
+            <h3>逐字保留</h3>
+            <p>用户问题、表结构中的 <code>dwell_minutes</code>、聚合 SQL、工具返回 <code>6639</code>、最终答案。</p>
+          </div>
+          <div class="card">
+            <span class="badge omitted">公开节选省略</span>
+            <h3>只说明功能</h3>
+            <p>完整轨迹共有 4 次工具调用；1.3 为控制篇幅省略了目录枚举和数据表列表的命令文本及长输出。</p>
+          </div>
+          <div class="card">
+            <span class="badge derived">严格推导</span>
+            <h3>由实现计算</h3>
+            <p>3,048 个非监督 token、12.01% 监督密度、损失公式与因果可见性均由已验证计数和代码规则推导。</p>
+          </div>
+        </div>
+        <div class="callout warn">
+          <strong>不补造原则：</strong>报告不复原公开节选中被省略的两条具体 shell 命令。若需要逐字符审计，应回到
+          <code>qwen3.6-27B_20260628_v41_openai.jsonl</code> 第 199 行；本报告只使用已保留的关键证据。
+        </div>
+      </section>
+
+      <section id="sample">
+        <span class="section-kicker">2 · 病例入场</span>
+        <h2>原始 OpenAI-style 轨迹</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>字段</th><th>值</th><th>意义</th></tr></thead>
+            <tbody>
+              <tr><td>原始位置</td><td><code>qwen3.6-27B_20260628_v41_openai.jsonl:199</code></td><td>可追溯到源文件和行号</td></tr>
+              <tr><td>任务</td><td><code>task_000201</code></td><td>按 task_id 做切分与防泄漏</td></tr>
+              <tr><td>质量层</td><td><code>sql_result_verified</code></td><td>SQL 结果已有强验证证据</td></tr>
+              <tr><td>训练切分</td><td><code>train / core_8k</code></td><td>不是 validation/test</td></tr>
+              <tr><td>实际候选文件</td><td><code>train_candidates_16k_2028.jsonl</code></td><td>已转换的 ms-swift agent JSONL，不是原始 OpenAI JSONL</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>2.1 要解决的题目</h3>
+        <div class="callout">
+          “我想查一下 2026-06-19 那天运单轨迹事件里所有停留时长（分钟）总共是多少。”
+        </div>
+
+        <h3>2.2 真实关键链路</h3>
+        <div class="pipeline" aria-label="轨迹关键链路">
+          <div class="pipe-node">用户提出聚合问题</div>
+          <div class="pipe-node">探索数据库与表</div>
+          <div class="pipe-node">确认 dwell_minutes 字段</div>
+          <div class="pipe-node">执行 SUM 聚合</div>
+          <div class="pipe-node">基于 6639 作答</div>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>时序</th><th>assistant 动作</th><th>environment observation</th><th>公开证据状态</th></tr></thead>
+            <tbody>
+              <tr><td>调用 1</td><td>定位数据库/目录</td><td>目录枚举结果</td><td><span class="badge omitted">内容省略</span></td></tr>
+              <tr><td>调用 2</td><td>枚举 SQLite 数据表</td><td>数据表列表</td><td><span class="badge omitted">内容省略</span></td></tr>
+              <tr><td>调用 3</td><td>检查 <code>fact_waybill_event</code> 表结构</td><td>含 <code>event_time</code>、<code>dwell_minutes</code></td><td><span class="badge exact">关键原文保留</span></td></tr>
+              <tr><td>调用 4</td><td><code>SELECT SUM(dwell_minutes)…</code></td><td><code>6639</code></td><td><span class="badge exact">逐字保留</span></td></tr>
+              <tr><td>终止</td><td>回答总和为 6,639 分钟</td><td>—</td><td><span class="badge exact">逐字保留</span></td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <details open>
+          <summary>查看关键 OpenAI-style JSON 节选</summary>
+          <div>
+<pre><code>{
+  "messages": [
+    {
+      "role": "system",
+      "content": "你是一个物流数据分析师……先思考需要什么数据，再写 SQL 查询……"
+    },
+    {
+      "role": "user",
+      "content": "我想查一下2026-06-19那天运单轨迹事件里所有停留时长（分钟）总共是多少。"
+    },
+    {
+      "role": "assistant",
+      "reasoning_content": "fact_waybill_event 表可能是运单轨迹事件表，需要先检查表结构。",
+      "content": "\n\n",
+      "tool_calls": [{
+        "id": "call_schema",
+        "type": "function",
+        "function": {
+          "name": "bash",
+          "arguments": "{\"command\":\"sqlite3 /workspace/logistics.sqlite '.schema fact_waybill_event'\"}"
+        }
+      }]
+    },
+    {
+      "role": "tool",
+      "tool_call_id": "call_schema",
+      "content": "CREATE TABLE fact_waybill_event (..., event_time TEXT, ..., dwell_minutes INTEGER);"
+    },
+    {
+      "role": "assistant",
+      "reasoning_content": "表中存在 dwell_minutes 字段，现在按 event_time 的日期过滤并求和。",
+      "content": "\n\n",
+      "tool_calls": [{
+        "id": "call_sum",
+        "type": "function",
+        "function": {
+          "name": "bash",
+          "arguments": "{\"command\":\"sqlite3 /workspace/logistics.sqlite \\\"SELECT SUM(dwell_minutes) FROM fact_waybill_event WHERE date(event_time) = '2026-06-19';\\\"\"}"
+        }
+      }]
+    },
+    {"role": "tool", "tool_call_id": "call_sum", "content": "6639\n"},
+    {
+      "role": "assistant",
+      "reasoning_content": "查询结果表明总停留时长为 6639 分钟。",
+      "content": "2026-06-19 当天运单轨迹事件中所有停留时长的总和为 **6639 分钟**。"
+    }
+  ]
+}</code></pre>
+            <p class="small muted">这是关键步骤节选，不是原始第 199 行的逐字完整副本；被省略内容已在上表标注。</p>
+          </div>
+        </details>
+
+        <div class="callout">
+          <strong>格式结论：</strong>源记录是 OpenAI Messages / function-calling 风格；其中
+          <code>reasoning_content</code> 是项目扩展字段。2,028 条候选文件则已变成 ms-swift agent 格式，两者描述同一条轨迹，但不是同一层协议。
+        </div>
+      </section>
+
+      <section id="conversion">
+        <span class="section-kicker">3 · 消毒与换装</span>
+        <h2>OpenAI-style → ms-swift agent：精确转换</h2>
+        <p>转换由仓库脚本 <a href="../scripts/prepare_trajectory_sft.py"><code>prepare_trajectory_sft.py</code></a> 完成，而不是训练框架在暗中猜测。</p>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>原始字段</th><th>转换后的消息</th><th>loss 属性</th><th>解释</th></tr></thead>
+            <tbody>
+              <tr><td><code>system</code> / <code>user</code></td><td>角色与正文原样保留</td><td>未设为 True</td><td>条件，不训练模型复述</td></tr>
+              <tr><td><code>assistant.reasoning_content</code></td><td>合入 assistant 的 <code>&lt;think&gt;…&lt;/think&gt;</code></td><td><code>true</code></td><td>显式监督中间决策</td></tr>
+              <tr><td><code>assistant.tool_calls[]</code></td><td>每个调用变成一条 <code>role=tool_call</code></td><td><code>true</code></td><td>监督工具名和参数</td></tr>
+              <tr><td><code>role=tool</code></td><td><code>role=tool_response</code></td><td>不参与</td><td>环境输出只作后续上下文</td></tr>
+              <tr><td>最终 <code>assistant.content</code></td><td>继续作为 assistant 内容</td><td><code>true</code></td><td>监督最终答案</td></tr>
+              <tr><td>原始顶层 tools 缺失</td><td>注入 bash/read/write/edit JSON Schema</td><td>不参与</td><td>定义模型可选动作空间</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div class="callout">
+          <strong>字段与实际监督结果要分开看：</strong>转换器确实在 assistant 和 tool_call 消息上写入 <code>"loss": true</code>；
+          但 ms-swift 对逐消息 <code>loss</code> 字段的角色支持和 agent template 的 <code>loss_scale</code> 规则并非同一机制。
+          本项目不靠字段名推测，而是解码真实 <code>labels</code>，确认 tool call 最终受监督、tool response 最终被忽略。
+        </div>
+
+        <h3>3.1 转换器实际做的事</h3>
+<pre><code># 语义等价伪代码；规则对应仓库实现
+assistant_content = f"&lt;think&gt;\n{reasoning.strip()}\n&lt;/think&gt;\n\n{content.strip()}"
+append({"role": "assistant", "content": assistant_content, "loss": true})
+
+for call in tool_calls:
+    arguments = json.loads(call.function.arguments)  # 必须得到 object
+    append({
+      "role": "tool_call",
+      "content": json.dumps({"name": call.function.name, "arguments": arguments}),
+      "loss": true
+    })
+
+append({"role": "tool_response", "content": tool.content})
+</code></pre>
+        <div class="callout warn">
+          <strong>一个容易漏掉的细节：</strong>原始 <code>tool_call_id</code> 在转换时用于验证“调用—返回”是否闭环、是否重复；
+          通过校验后，ms-swift 的顺序消息表示不再保留该 ID。结构错误会在训练前被拒绝，不能靠 loss mask 修复。
+        </div>
+
+        <details>
+          <summary>查看转换后的关键消息形态</summary>
+          <div>
+<pre><code>{
+  "tools": "[{...bash...},{...read...},{...write...},{...edit...}]",
+  "messages": [
+    {"role":"system", "content":"你是一个物流数据分析师……"},
+    {"role":"user", "content":"我想查一下2026-06-19……"},
+    {
+      "role":"assistant",
+      "content":"&lt;think&gt;\nfact_waybill_event 表可能……\n&lt;/think&gt;",
+      "loss":true
+    },
+    {
+      "role":"tool_call",
+      "content":"{\"name\":\"bash\",\"arguments\":{\"command\":\"sqlite3 ... .schema fact_waybill_event\"}}",
+      "loss":true
+    },
+    {"role":"tool_response", "content":"CREATE TABLE ... dwell_minutes INTEGER);"},
+    ...
+    {"role":"tool_response", "content":"6639\n"},
+    {
+      "role":"assistant",
+      "content":"&lt;think&gt;\n查询结果表明……\n&lt;/think&gt;\n\n2026-06-19……**6639 分钟**。",
+      "loss":true
+    }
+  ]
+}</code></pre>
+          </div>
+        </details>
+      </section>
+
+      <section id="encoding">
+        <span class="section-kicker">4 · 进入模型前的最后一道门</span>
+        <h2>Chat template 序列化与真实分词</h2>
+        <p>JSON 对象不会直接送进 Transformer。必须先由目标模型的 template 变成一个字符串，再由 Qwen3.5 tokenizer 变成整数序列。</p>
+        <div class="pipeline">
+          <div class="pipe-node">OpenAI-style JSON</div>
+          <div class="pipe-node">ms-swift messages</div>
+          <div class="pipe-node">Qwen chat template</div>
+          <div class="pipe-node">tokenizer</div>
+          <div class="pipe-node">input_ids + labels</div>
+        </div>
+
+        <div class="formula">
+          D → C(D) → s = S<sub>Qwen</sub>(C(D)) → x<sub>1:T</sub> = τ<sub>Qwen</sub>(s)
+          <span class="sub">D：原始数据；C：字段转换；S：chat template；τ：Qwen3.5 tokenizer；本样本 T = 3,464。</span>
+        </div>
+
+        <h3>4.1 当前项目验证代码</h3>
+<pre><code>processor = get_processor("/models/Qwen3.5-9B")
+template = get_template(processor, loss_scale="default+ignore_empty_think")
+template.set_mode("train")
+encoded = template.encode(row)
+
+input_ids = encoded["input_ids"]   # 长度 3,464
+labels    = encoded["labels"]      # 同位置标签；非监督位置为 -100
+</code></pre>
+        <p>验证脚本同时确认：</p>
+        <ul class="checklist">
+          <li>工具契约被注入 system 前缀</li>
+          <li>序列中存在 <code>&lt;think&gt;</code></li>
+          <li>序列中存在 <code>&lt;tool_call&gt;</code></li>
+          <li>序列中存在 <code>&lt;tool_response&gt;</code></li>
+          <li>tool call 出现在监督 labels 中</li>
+          <li>tool response 不出现在监督 labels 中</li>
+        </ul>
+        <div class="callout danger">
+          <strong>禁止用字符数代替 token 数。</strong>角色标记、工具 schema、JSON 标点、换行、中文和数字都会经过 tokenizer。
+          例如文本 <code>6639</code> 可能被切成一个或多个 token；本报告不假设其具体切法，只使用真实编码得到的总计数。
+        </div>
+      </section>
+
+      <section id="mask">
+        <span class="section-kicker">5 · 精确划定切口</span>
+        <h2>Loss mask：3,464 个 token 中只给 416 个打分</h2>
+        <div class="mask-summary" aria-label="监督与非监督 token 比例">
+          <div class="mask-context">条件 / observation：3,048（87.99%）</div>
+          <div class="mask-target">监督：416（12.01%）</div>
+        </div>
+        <p class="small muted">每 1 个监督 token，约有 7.33 个非监督上下文 token。它们仍消耗前向计算和显存。</p>
+
+        <h3>5.1 三种 mask 不能混为一谈</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>机制</th><th>控制什么</th><th>本样本中的作用</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Causal mask</strong></td><td>一个位置能不能看未来 token</td><td>生成 SQL 时绝不能读取未来的 <code>6639</code></td></tr>
+              <tr><td><strong>Padding / attention mask</strong></td><td>批处理补齐位置是否进入注意力</td><td>不同长度样本组 batch 时屏蔽 pad</td></tr>
+              <tr><td><strong>Loss mask / labels</strong></td><td>该位置是否直接计入交叉熵</td><td>只给 assistant 推理、调用、答案打分</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>5.2 按消息角色划分</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>区域</th><th>留在 input_ids</th><th>labels</th><th>直接参与 loss</th><th>理由</th></tr></thead>
+            <tbody>
+              <tr><td>tools schema</td><td>是</td><td><code>-100</code></td><td>否</td><td>可用动作空间</td></tr>
+              <tr><td>system</td><td>是</td><td><code>-100</code></td><td>否</td><td>规则条件</td></tr>
+              <tr><td>user</td><td>是</td><td><code>-100</code></td><td>否</td><td>问题条件</td></tr>
+              <tr><td>assistant reasoning</td><td>是</td><td>真实 token id</td><td><strong class="yes">是</strong></td><td>学习分析过程</td></tr>
+              <tr><td>assistant tool call</td><td>是</td><td>真实 token id</td><td><strong class="yes">是</strong></td><td>学习工具名、SQL 与参数</td></tr>
+              <tr><td>tool response</td><td>是</td><td><code>-100</code></td><td>否</td><td>环境事实，不让模型伪造</td></tr>
+              <tr><td>assistant final</td><td>是</td><td>真实 token id</td><td><strong class="yes">是</strong></td><td>学习最终回答</td></tr>
+              <tr><td>padding</td><td>批处理时存在</td><td><code>-100</code></td><td>否</td><td>仅用于对齐</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>5.3 一个缩微标签切片</h3>
+        <p class="muted small">下列词块只展示语义分区，不代表 Qwen tokenizer 的真实切词边界。</p>
+        <div class="token-demo" aria-label="语义级 token mask 示意">
+          <span class="token context">[system]</span>
+          <span class="token context">物流分析师</span>
+          <span class="token context">[user]</span>
+          <span class="token context">2026-06-19</span>
+          <span class="token supervised">[assistant/thinking]</span>
+          <span class="token supervised">检查表结构</span>
+          <span class="token supervised">[tool_call]</span>
+          <span class="token supervised">SELECT SUM(...)</span>
+          <span class="token observe">[tool_response]</span>
+          <span class="token observe">6639</span>
+          <span class="token supervised">[assistant]</span>
+          <span class="token supervised">6639 分钟</span>
+        </div>
+<pre><code>input_ids = [  ...系统..., ...用户..., ...推理..., ...SQL..., ...6639..., ...答案... ]
+labels    = [ -100, ...-100...,  token, ...token, -100, ...-100..., token, ...token ]
+mask m_j  = [    0, ...   0...,     1, ...   1,    0, ...   0...,     1, ...   1 ]</code></pre>
+        <div class="callout">
+          <strong>最重要的手术级区别：</strong><code>labels[j] = -100</code> 只表示“这个位置不作为直接预测题目”。
+          它不表示删掉 <code>input_ids[j]</code>，也不表示该 token 对后续答案没有影响。
+        </div>
+      </section>
+
+      <section id="causality">
+        <span class="section-kicker">6 · 保证没有偷看答案</span>
+        <h2>因果注意力：生成 SQL 时为什么看不到 6639</h2>
+        <p>decoder-only Transformer 对每个目标 token 使用它左侧的真实历史。对任意两个位置 <em>t</em> 和 <em>s</em>：</p>
+        <div class="formula">
+          M<sub>t,s</sub> = 0（s ≤ t）；M<sub>t,s</sub> = −∞（s &gt; t）
+          <span class="sub">softmax 后，未来位置的注意力概率为 0。</span>
+        </div>
+
+        <div class="causal-grid" role="table" aria-label="不同生成阶段可见信息">
+          <div class="head">正在预测</div><div class="head">已经可见</div><div class="head">仍不可见</div>
+          <div>表结构检查调用</div><div>system、用户问题、此前探索结果</div><div class="no">未来 schema 输出、6639</div>
+          <div>SUM SQL</div><div>用户问题、表结构、dwell_minutes 字段</div><div class="no">未来查询结果 6639</div>
+          <div>最终回答</div><div>完整调用历史、工具返回 6639</div><div>后面没有必要依赖的未来事实</div>
+        </div>
+
+        <h3>6.1 teacher forcing 的准确含义</h3>
+        <p>
+          训练时整条轨迹已经在内存中，但模型在位置 <em>t</em> 的概率仍只条件于真实前缀 <em>x</em><sub>&lt;t</sub>。
+          “整条轨迹并行计算”是计算优化，不是让早期位置读取后文。
+        </p>
+        <div class="formula">
+          P<sub>θ</sub>(x<sub>1:T</sub>) = ∏<sub>j=1…T</sub> P<sub>θ</sub>(x<sub>j</sub> | x<sub>&lt;j</sub>)
+        </div>
+
+        <h3>6.2 observation 不计 loss，却仍能影响梯度</h3>
+        <div class="grid-2">
+          <div class="card">
+            <h4>直接项</h4>
+            <p><code>6639</code> 的 label 是 <code>-100</code>，所以没有“请模型预测 6639”这一项交叉熵。</p>
+          </div>
+          <div class="card">
+            <h4>间接路径</h4>
+            <p>后续“6639 分钟”的预测会注意到 observation。其 loss 反向传播时，梯度取决于模型如何利用这段上下文。</p>
+          </div>
+        </div>
+        <div class="callout good">
+          因而更精确的说法是：<strong>tool response 没有直接 target loss，但它参与后续 supervised token 的条件计算。</strong>
+          “tool response 完全没有梯度作用”是错误表述。
+        </div>
+      </section>
+
+      <section id="loss">
+        <span class="section-kicker">7 · 像解数学题一样计算</span>
+        <h2>从 logits 到单条轨迹的 masked cross-entropy</h2>
+        <h3>7.1 第一步：产生 logits</h3>
+        <p>模型读入前缀 <em>x</em><sub>&lt;j</sub>，在词表的每个候选 token 上给出一个未归一化分数：</p>
+        <div class="formula">z<sub>j−1</sub> = f<sub>θ</sub>(x<sub>&lt;j</sub>) ∈ ℝ<sup>|V|</sup></div>
+
+        <h3>7.2 第二步：softmax 得到概率</h3>
+        <div class="formula">
+          P<sub>θ</sub>(x<sub>j</sub>=v | x<sub>&lt;j</sub>) = exp(z<sub>j−1,v</sub>) / Σ<sub>u∈V</sub> exp(z<sub>j−1,u</sub>)
+        </div>
+        <p>例如某个监督位置只有三个候选，logits 为 <code>[2, 1, 0]</code>，正确 token 是第一个：</p>
+        <div class="formula">
+          p = e² / (e² + e¹ + e⁰) ≈ 0.665；　ℓ = −log(p) ≈ 0.408
+        </div>
+
+        <h3>7.3 第三步：乘 mask，只保留 416 道题</h3>
+        <p>令 <em>m</em><sub>j</sub>∈{0,1} 表示 token <em>x</em><sub>j</sub> 是否受监督：</p>
+        <div class="formula">
+          ℓ<sub>j</sub> = −m<sub>j</sub> · log P<sub>θ</sub>(x<sub>j</sub> | x<sub>&lt;j</sub>)
+        </div>
+        <p>因此本样本在标准非忽略 token 均值口径下：</p>
+        <div class="formula">
+          L<sub>sample</sub> = − 1/416 · Σ<sub>j=2…3464</sub> m<sub>j</sub> log P<sub>θ</sub>(x<sub>j</sub> | x<sub>&lt;j</sub>)
+        </div>
+        <div class="callout warn">
+          <strong>索引移位：</strong>位置 <em>j−1</em> 的 logits 预测位置 <em>j</em> 的真实 token。实现里常见
+          <code>logits[..., :-1, :]</code> 对齐 <code>labels[..., 1:]</code>；不要把“当前位置输入”误写成“预测它自己”。
+        </div>
+
+        <h3>7.4 batch 级归一化</h3>
+        <div class="formula">
+          L<sub>batch</sub> = − Σ<sub>i,j</sub> m<sub>i,j</sub> log P<sub>θ</sub>(x<sub>i,j</sub>|x<sub>i,&lt;j</sub>) / Σ<sub>i,j</sub> m<sub>i,j</sub>
+        </div>
+        <p class="muted small">
+          上式是常见 token-level mean。分布式训练还需跨 data-parallel rank 聚合分子和有效 token 数；若具体 trainer 使用不同归一化口径，应以运行代码和日志为准。
+        </p>
+      </section>
+
+      <section id="update">
+        <span class="section-kicker">8 · 缝合与恢复</span>
+        <h2>反向传播、梯度与参数更新</h2>
+        <h3>8.1 反向传播</h3>
+        <div class="formula">g = ∇<sub>θ</sub>L<sub>batch</sub></div>
+        <p>
+          416 个监督 token 提供直接交叉熵项。system、user 和 tool response 不产生自己的 target loss，但它们影响监督位置的 hidden state，
+          所以模型仍会学习“怎样利用这些条件作出后续动作”。
+        </p>
+
+        <h3>8.2 AdamW 的抽象更新</h3>
+        <div class="formula">
+          m<sub>t</sub> = β₁m<sub>t−1</sub> + (1−β₁)g<sub>t</sub><br>
+          v<sub>t</sub> = β₂v<sub>t−1</sub> + (1−β₂)g<sub>t</sub>²<br>
+          θ<sub>t+1</sub> = θ<sub>t</sub> − η · m̂<sub>t</sub>/(√v̂<sub>t</sub>+ε) − ηλθ<sub>t</sub>
+        </div>
+        <p>学习率 η、权重衰减 λ、梯度裁剪、混合精度和梯度累积会影响数值过程，但不改变“只在监督 token 上定义目标”的本质。</p>
+
+        <h3>8.3 全参数与 LoRA</h3>
+        <div class="grid-2">
+          <div class="card">
+            <h4>全参数 SFT</h4>
+            <p>θ 中被允许训练的基础模型参数都接收更新。本项目正式链路采用 Megatron/MindSpeed 分布式全参数训练。</p>
+          </div>
+          <div class="card">
+            <h4>LoRA SFT</h4>
+            <p>基础权重冻结，只更新低秩增量：<span class="mono">W = W₀ + (α/r)BA</span>。数据、mask 和 cross-entropy 不变。</p>
+          </div>
+        </div>
+        <div class="callout">
+          一次 optimizer step 不等于一次完整轨迹。如果使用 micro-batch、gradient accumulation、sequence packing 或数据并行，
+          必须根据训练配置说明“一步”实际聚合了多少样本和多少监督 token。
+        </div>
+      </section>
+
+      <section id="surgery">
+        <span class="section-kicker">9 · 手术记录</span>
+        <h2>从一行 JSON 到一次更新：九步闭环</h2>
+        <div class="steps">
+          <article class="step">
+            <h3>身份与切分核验</h3>
+            <p>确认 <code>task_000201</code> 属于 train，且同题变体没有泄漏到 validation/test。</p>
+            <div class="io"><div><strong>输入：</strong>源文件、行号、task_id、plan metadata</div><div><strong>输出：</strong>可进入 train 的唯一身份</div></div>
+          </article>
+          <article class="step">
+            <h3>正确性与结构核验</h3>
+            <p>确认 SQL 结果证据、4 次调用/返回闭环、最终回答存在、参数 JSON 可解析。</p>
+            <div class="io"><div><strong>输入：</strong>OpenAI-style messages</div><div><strong>输出：</strong><code>sql_result_verified</code> 合格轨迹</div></div>
+          </article>
+          <article class="step">
+            <h3>格式转换</h3>
+            <p>推理合入 <code>&lt;think&gt;</code>，tool_calls 拆为 tool_call，工具输出变为 tool_response，并补工具 schema。</p>
+            <div class="io"><div><strong>输入：</strong>OpenAI-style record</div><div><strong>输出：</strong>ms-swift agent row</div></div>
+          </article>
+          <article class="step">
+            <h3>Qwen 模板序列化</h3>
+            <p>把工具定义、角色边界和消息内容编码为 Qwen3.5 真正看到的单一字符串。</p>
+            <div class="io"><div><strong>输入：</strong>tools + messages</div><div><strong>输出：</strong>带特殊标记的 prompt 序列</div></div>
+          </article>
+          <article class="step">
+            <h3>真实 tokenizer 编码</h3>
+            <p>生成长度为 3,464 的 <code>input_ids</code>；长度边界按 token 判定，不按字符判定。</p>
+            <div class="io"><div><strong>输入：</strong>序列化字符串</div><div><strong>输出：</strong><code>x₁…x₃₄₆₄</code></div></div>
+          </article>
+          <article class="step">
+            <h3>构造 labels</h3>
+            <p>assistant reasoning/tool_call/final 保留 token id，其余位置设为 <code>-100</code>；得到 416 个监督位置。</p>
+            <div class="io"><div><strong>输入：</strong>消息边界 + input_ids</div><div><strong>输出：</strong>labels 与 loss mask</div></div>
+          </article>
+          <article class="step">
+            <h3>因果前向传播</h3>
+            <p>所有位置并行算 logits，但每个位置只能注意左侧；生成 SUM SQL 时不可见未来 <code>6639</code>。</p>
+            <div class="io"><div><strong>输入：</strong>input_ids + causal/padding mask</div><div><strong>输出：</strong>每个位置的词表 logits</div></div>
+          </article>
+          <article class="step">
+            <h3>Masked cross-entropy</h3>
+            <p>对齐 shifted logits/labels，只汇总 416 个非 <code>-100</code> 目标；tool response 没有直接 loss。</p>
+            <div class="io"><div><strong>输入：</strong>logits + labels</div><div><strong>输出：</strong>标量 loss</div></div>
+          </article>
+          <article class="step">
+            <h3>反向传播与 optimizer step</h3>
+            <p>计算梯度、跨设备聚合、裁剪并更新全参数或 LoRA 参数；保存可复现日志与检查点。</p>
+            <div class="io"><div><strong>输入：</strong>标量 loss</div><div><strong>输出：</strong>更新后的 θ</div></div>
+          </article>
+        </div>
+      </section>
+
+      <section id="validation">
+        <span class="section-kicker">10 · 术后验收</span>
+        <h2>训练成功不能只看 loss</h2>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>验收层</th><th>这条样本要检查什么</th><th>失败示例</th></tr></thead>
+            <tbody>
+              <tr><td>格式</td><td>tool_call JSON 可解析、调用返回闭环、模板标记存在</td><td>参数字符串不是合法 JSON</td></tr>
+              <tr><td>动作</td><td>能否选择 bash/SQLite 并找到正确表字段</td><td>直接猜答案或查询错误表</td></tr>
+              <tr><td>SQL</td><td>日期过滤和 <code>SUM(dwell_minutes)</code> 是否正确</td><td>漏掉日期、求平均值、字段错</td></tr>
+              <tr><td>工具闭环</td><td>是否等待真实工具返回再继续</td><td>模型自行伪造 <code>6639</code></td></tr>
+              <tr><td>最终答案</td><td>数值 6639、单位分钟、日期一致</td><td>6639 小时、日期写错</td></tr>
+              <tr><td>泛化</td><td>换日期、换聚合字段后仍能正确行动</td><td>只背下本题答案</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>10.1 这条样本能证明什么</h3>
+        <ul class="checklist">
+          <li>能示范完整的工具轨迹监督结构</li>
+          <li>能证明当前模板的 tool call 被监督</li>
+          <li>能证明 tool response 被保留但不计直接 loss</li>
+          <li>能给出真实长度与监督密度</li>
+        </ul>
+        <h3>10.2 这条样本不能单独证明什么</h3>
+        <ul class="checklist">
+          <li>不能证明 2,028 条全部答案正确</li>
+          <li>不能证明训练后一定会在线调用成功</li>
+          <li>不能证明更长轨迹的显存一定足够</li>
+          <li>不能用单样本训练 loss 代替 held-out 评测</li>
+        </ul>
+
+        <div class="callout danger">
+          <strong>最后的安全线：</strong>轨迹“格式正确”只说明可训练；只有工具结果可验证、task 级切分无泄漏、在线闭环评测通过，才说明它对 agent 能力真正有价值。
+        </div>
+      </section>
+
+      <section id="appendix">
+        <span class="section-kicker">附录 · 可复核材料</span>
+        <h2>符号、源码与官方定义</h2>
+        <h3>A. 符号表</h3>
+        <div class="table-wrap">
+          <table>
+            <thead><tr><th>符号</th><th>含义</th><th>本样本</th></tr></thead>
+            <tbody>
+              <tr><td><em>D</em></td><td>原始 OpenAI-style 轨迹</td><td>源文件第 199 行</td></tr>
+              <tr><td><em>s</em></td><td>chat template 序列化后的字符串</td><td>含工具 schema 和角色特殊标记</td></tr>
+              <tr><td><em>x</em><sub>1:T</sub></td><td>token 序列</td><td><em>T</em> = 3,464</td></tr>
+              <tr><td><em>m</em><sub>j</sub></td><td>loss mask</td><td>416 个 1，3,048 个 0</td></tr>
+              <tr><td><em>V</em></td><td>模型词表</td><td>由 Qwen3.5 tokenizer 定义</td></tr>
+              <tr><td>θ</td><td>可训练参数</td><td>全参数或 LoRA 子集</td></tr>
+            </tbody>
+          </table>
+        </div>
+
+        <h3>B. 本仓库审计入口</h3>
+        <ul>
+          <li><a href="trajectory_sft_process.md">轨迹 SFT 总体说明（1.3 原始案例）</a></li>
+          <li><a href="../scripts/prepare_trajectory_sft.py">OpenAI → ms-swift 转换实现</a></li>
+          <li><a href="../scripts/materialize_trajectory_plan_sets.py">按规划物化训练集合</a></li>
+          <li><a href="../scripts/verify_trajectory_encoding.py">Qwen3.5 token 与 loss mask 验证</a></li>
+        </ul>
+
+        <h3>C. 官方与原始参考</h3>
+        <ul>
+          <li><a href="https://developers.openai.com/api/docs/guides/supervised-fine-tuning">OpenAI：Supervised fine-tuning</a></li>
+          <li><a href="https://developers.openai.com/api/docs/guides/function-calling">OpenAI：Function calling</a></li>
+          <li><a href="https://swift.readthedocs.io/en/latest/Instruction/Agent-support.html">ms-swift：Agent Support / Dataset Format</a></li>
+          <li><a href="https://swift.readthedocs.io/en/latest/Instruction/Command-line-parameters.html">ms-swift：loss_scale 参数定义</a></li>
+          <li><a href="https://docs.pytorch.org/docs/stable/generated/torch.nn.CrossEntropyLoss.html">PyTorch：CrossEntropyLoss 与 ignore_index</a></li>
+          <li><a href="https://arxiv.org/abs/1706.03762">Vaswani et al.：Attention Is All You Need</a></li>
+          <li><a href="https://arxiv.org/abs/2106.09685">Hu et al.：LoRA</a></li>
+        </ul>
+        <p class="small muted">外部文档核对日期：2026-07-16。报告本体不依赖网络资源，可离线阅读与打印。</p>
+
+        <h3>D. 60 秒讲解词</h3>
+        <div class="callout good">
+          这条数据先被转换成 Qwen 能识别的完整工具交互序列，共 3,464 个 token。训练时模型能读取 system、用户问题和工具返回，
+          但只有 assistant 的推理、工具调用和最终回答这 416 个 token 参与交叉熵。模型在生成 SUM SQL 时受因果 mask 限制，看不到未来的 6639；
+          生成最终答案时，6639 已经是历史 observation，所以模型学习的是“根据真实工具结果回答”。最后，416 个监督位置的负对数概率求平均并反向传播，
+          更新全参数或 LoRA 参数。这就是轨迹 SFT：loss 仍是 next-token cross-entropy，但监督对象从一个答案扩展成了完整的行动过程。
+        </div>
+      </section>
+
+      <footer class="footer">
+        qwen3.5-9b-trajory-SFT · v0.7.3 · task_000201 · 2026-07-16
+      </footer>
+    </main>
+  </div>
+  <script>
+    const button = document.getElementById('maskToggle');
+    button.addEventListener('click', () => {
+      document.body.classList.toggle('mask-focus');
+      button.textContent = document.body.classList.contains('mask-focus')
+        ? '恢复显示全部 token'
+        : '突出监督 token';
+    });
+  </script>
+</body>
+</html>
