@@ -428,7 +428,123 @@ assert len(supervised_ids) == 416
 
 所以“mask 掉 observation”的完整说法是：**observation 在 labels 中被忽略，但在 input_ids 中保留；只要它位于过去，后续 assistant token 就能通过因果注意力读取它。**
 
-### 3.4 下一个 token 的概率
+### 3.4 到底是谁预测谁：mask 贴在“目标 token”上
+
+#### 3.4.1 先把索引对齐
+
+设 template 编码后的序列为：
+
+$$
+x_1,x_2,\ldots,x_T
+$$
+
+模型在位置 $j-1$ 输出 logits，预测的不是 $x_{j-1}$ 自己，而是下一个真实 token $x_j$：
+
+$$
+z_{j-1}=f_\theta(x_{\le j-1})
+$$
+
+$$
+P_\theta(x_j\mid x_{<j})=\operatorname{softmax}(z_{j-1})[x_j]
+$$
+
+训练代码在概念上做下面的移位：
+
+```python
+shift_logits = logits[:-1]   # 第 0...T-2 个位置的预测
+shift_labels = labels[1:]    # 第 1...T-1 个位置的真实目标
+```
+
+因此，决定一项 loss 是否保留的是**目标 token $x_j$ 所在的语义区段**：
+
+$$
+\ell_j=
+-\mathbf{1}[y_j\neq -100]
+\log P_\theta(x_j\mid x_{<j})
+$$
+
+请特别注意：
+
+- `labels[j]` 决定的是 `logits[j-1]` 这次 next-token 预测是否计分；
+- mask 看的是“要预测出的 $x_j$ 属于 assistant 还是 environment”，不是看 `logits` 所在的前一个 token 属于谁；
+- message 边界附近可能还有 Qwen template 特殊 token，精确相邻位置以真实 labels 为准，但 target-side mask 原理不变。
+
+#### 3.4.2 用消息区段表达“谁预测谁”
+
+语言模型不是一次预测完整的“下一步骤”，而是逐 token 预测。把连续 token 合并成语义区段后，可以这样读：
+
+| 已知前缀 | 接下来被预测的目标区段 | 目标 labels | 是否计入 loss | 训练含义 |
+|---|---|---|:---:|---|
+| tools + system + user | 第一段 assistant 推理 | 真实 token id | 是 | 学习收到问题后先想什么 |
+| 前缀 + 已生成的 assistant 推理 | 后续推理 token / tool call token | 真实 token id | 是 | 学习工具选择、命令、SQL 和参数 |
+| 前缀 + 完整 tool call | tool response token | `-100` | 否 | 计算上仍有 next-token logits，但不训练模型伪造环境返回 |
+| 前缀 + 完整 tool response | 下一段 assistant 推理或最终回答 | 真实 token id | 是 | 学习读取 observation 后如何继续 |
+| 前缀 + 已生成的最终回答 | 后续回答 token和结束边界 | 由 template 决定，assistant 正文为真实 id | 是/边界依模板 | 学习把答案完整说完并终止 |
+| 任意有效前缀 | padding token | `-100` | 否 | padding 不是数据目标，且另由 attention mask 屏蔽 |
+
+换句话说，训练序列中的方向是：
+
+```text
+[TOOLS / SYSTEM / USER]
+          │
+          └──预测──> [ASSISTANT THINK]            labels=真实 id，算 loss
+                           │
+                           └──预测──> [TOOL CALL]  labels=真实 id，算 loss
+                                              │
+                                              └──预测──> [TOOL RESPONSE]
+                                                            labels=-100，不算 loss
+                                                            │
+                                                            └──作为过去条件──>
+                                                               [NEXT ASSISTANT / FINAL]
+                                                               labels=真实 id，算 loss
+```
+
+这里“tool call 预测 tool response”只表示标准语言模型前向仍会在这些位置产生 next-token logits；因为 tool response 的目标 labels 全是 `-100`，这些预测不会进入训练目标。真实推理时 tool response 由外部工具执行器提供，不由模型生成。
+
+#### 3.4.3 精确代入 `task_000201`
+
+下表按“被预测的目标区段”列出这条真实轨迹。前两轮探索命令的正文在公开节选中省略，但角色与 mask 归属是确定的。
+
+| 顺序 | 被预测的目标区段 | 它的预测条件中已经有什么 | 它不能看到什么 | labels | loss |
+|---:|---|---|---|---|:---:|
+| 1 | tools schema、system、user 自身的 token | 各自左侧 token | 右侧全部内容 | `-100` | 否 |
+| 2 | 第 1 轮 assistant：定位数据库的推理与 tool call | tools、system、用户问题 | 第 1 轮及以后所有工具返回 | 真实 id | 是 |
+| 3 | 第 1 轮目录 observation | 用户问题、第 1 轮 assistant call | 后续表列表、schema、`6639` | `-100` | 否 |
+| 4 | 第 2 轮 assistant：枚举表的推理与 tool call | 上述内容 + 第 1 轮 observation | 第 2 轮及以后工具返回 | 真实 id | 是 |
+| 5 | 第 2 轮表列表 observation | 前两轮 assistant 动作 | schema、`6639` | `-100` | 否 |
+| 6 | assistant：“检查 `fact_waybill_event` 表结构”及 `.schema` 调用 | 用户问题、目录和表列表 observation | schema 返回、`6639` | 真实 id | 是 |
+| 7 | schema observation：含 `event_time`、`dwell_minutes` | `.schema` tool call | 聚合结果 `6639` | `-100` | 否 |
+| 8 | assistant：“按日期求和”及 `SELECT SUM(...)` 调用 | 完整 schema observation，已经知道字段 | SQL 的未来执行结果 `6639` | 真实 id | 是 |
+| 9 | SQL observation：`6639` | 聚合 SQL tool call | 最终回答 | `-100` | 否 |
+| 10 | assistant：“总和为 6639 分钟” | 全部过去内容，**包括 observation `6639`** | 后续 token | 真实 id | 是 |
+
+最容易混淆的是第 9→10 项：
+
+```text
+目标是 tool response 中的“6639”时： labels=-100，不算 loss
+目标是后续 assistant 中的“总和为 6639 分钟”时： labels=真实 id，算 loss
+```
+
+所以，模型没有被训练去“凭空生成数据库返回 6639”；它被训练去“在已经读到数据库返回 6639 后，生成正确的后续推理和答案”。
+
+#### 3.4.4 一个极小的 token 对齐例子
+
+下面只是说明 shift，不代表 Qwen3.5 对中文的真实切词：
+
+```text
+位置 j:         0         1          2          3           4
+input_ids:   [用户末词] [助手:查] [助手:SQL] [工具:6639] [助手:答案]
+labels:         -100     token(查)   token(SQL)    -100      token(答案)
+
+logits[0] 预测 input_ids[1] = “助手:查”       → labels[1]是真实 id → 算 loss
+logits[1] 预测 input_ids[2] = “助手:SQL”      → labels[2]是真实 id → 算 loss
+logits[2] 预测 input_ids[3] = “工具:6639”     → labels[3]=-100    → 不算 loss
+logits[3] 预测 input_ids[4] = “助手:答案”     → labels[4]是真实 id → 算 loss
+```
+
+严格实现中，角色边界会占若干特殊 token，因此不能把上面五格当成真实 token 序列；但“`logits[j-1]` 预测 `input_ids[j]`，由 `labels[j]` 决定是否计分”就是精确规则。
+
+### 3.5 下一个 token 的概率
 
 模型在位置 $t$ 输出对词表中每个 token 的 logits：
 
@@ -452,7 +568,7 @@ $$
 
 如果该位置属于 observation，$m_{t+1}=0$，这项 loss 乘零；但 observation 仍会影响后续 assistant token 的条件概率。
 
-### 3.5 单条轨迹的目标函数
+### 3.6 单条轨迹的目标函数
 
 teacher forcing 使用数据中的真实历史，而不是模型自己采样的历史。单条轨迹的 masked negative log-likelihood 为：
 
@@ -475,7 +591,7 @@ $$
 \prod_{t:m_t=1}p_\theta(x_t\mid x_{<t})
 $$
 
-### 3.6 批次 loss
+### 3.7 批次 loss
 
 对 batch $\mathcal{B}$ 中的轨迹，常用 token-level mean：
 
@@ -727,8 +843,8 @@ $$
 
 1. 轨迹 SFT 本质仍是自回归 next-token prediction，不是另一种神秘 loss。
 2. 完整轨迹被序列化为一个因果 token 序列；模型每一步只能看过去，不能看未来工具结果。
-3. system、用户问题、工具定义和 observation 都保留为上下文，但通过 loss mask 不计分。
-4. assistant 的中间推理、工具调用和最终回答参与交叉熵，所以模型既学习答案，也学习行动过程。
+3. `logits[t]` 预测 `input_ids[t+1]`，是否计分由目标位置 `labels[t+1]` 决定，而不是由前一个位置的角色决定。
+4. tools、system、user 和 observation 的目标 labels 为 `-100`，但正文仍作上下文；assistant 推理、工具调用和最终回答的目标 labels 保留真实 token id。
 5. 好的轨迹训练不仅要格式正确，还要结果可验证、任务不泄漏、长度可承受，并在在线工具闭环中评测。
 
 ## 11. 常见误解
@@ -736,6 +852,8 @@ $$
 | 误解 | 正确说法 |
 |---|---|
 | mask observation 就是删除 observation | 错。它仍在输入中，只是不计算该位置的 loss |
+| tool response 被 mask，所以模型不会对这些位置产生 logits | 错。前向通常仍产生 next-token logits，只是目标 labels 为 `-100`，交叉熵忽略这些项 |
+| 前一个 token 属于 tool response，所以它后面第一个 assistant token也不会训练 | 错。mask 贴在被预测的目标 token 上；目标属于 assistant 就参与 loss，其前缀可以包含 tool response |
 | 轨迹 SFT 会在训练时实时执行工具 | 通常不会；训练重放记录，推理才执行工具 |
 | loss 只训练最终答案 | 本项目还训练中间推理和工具调用 |
 | tool call 是普通字符串，格式不重要 | 错。它必须满足工具 schema，推理时才能执行 |

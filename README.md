@@ -47,11 +47,13 @@
 - 已从 2,028 条 16K train 候选中选取一条 3,464-token SQL 强验证轨迹，追溯同源 OpenAI 原始记录并作为材料实例，逐消息标注 loss mask 和 OpenAI→ms-swift 映射。
 - 已新增以 `task_000201` 为贯穿案例的离线单页 HTML 教学报告，按 9 步严格推导 OpenAI-style 轨迹到 Qwen3.5 masked cross-entropy 和参数更新，并明确 3,464 个输入 token 中仅 416 个直接参与 loss。
 - 已修订 Markdown 版轨迹 SFT 说明：统一采用可渲染的 `$$...$$`/`$...$` 数学语法，明确 loss mask 读取 role、模板分段与 loss 规则后如何生成等长 labels，并将 `task_000201` 逐步带入结构校验、编码、mask、前向、loss 和参数更新。
+- 已进一步补全 next-token 的逐位置对齐：明确 `logits[j-1]` 预测 `input_ids[j]`，是否计分由目标侧 `labels[j]` 决定；用 `task_000201` 十个目标区段逐项标出 assistant/tool-call 监督与 tool-response `-100`，消除“前一个 token 被 mask 会连带屏蔽下一个 assistant”的误解。
 
 ## 版本记录
 
 | 版本 | 日期 | 摘要 | 状态 | 详细说明 |
 |---|---|---|---|---|
+| v0.7.5 | 2026-07-16 | 补全 next-token 的预测方向、target-side mask 和真实轨迹逐区段监督关系 | 已完成 | [查看报告](updates/v0.7.5_20260716_205105_next-token预测与目标侧mask说明.md) |
 | v0.7.4 | 2026-07-16 | 修复 Markdown 公式显示，补全 labels 构造细节和真实轨迹逐步对照 | 已完成 | [查看报告](updates/v0.7.4_20260716_202200_公式渲染与真实轨迹逐步说明.md) |
 | v0.7.3 | 2026-07-16 | 新增真实轨迹 SFT 的手术式逐步讲解 HTML，覆盖证据、转换、mask、概率、梯度与验收 | 已完成 | [查看报告](updates/v0.7.3_20260716_171354_真实轨迹SFT逐步讲解HTML.md) |
 | v0.7.2 | 2026-07-16 | 用 2,028 条候选中的真实强验证轨迹补充 OpenAI 格式和 mask 实例 | 已完成 | [查看报告](updates/v0.7.2_20260716_165238_真实轨迹示例与格式映射.md) |
